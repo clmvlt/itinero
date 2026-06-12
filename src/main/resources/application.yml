@@ -46,6 +46,10 @@ app:
     index-dir: ${APP_INDEX_DIR:data/address-index}
     # Forcer la reconstruction de l'index meme s'il existe deja
     rebuild-on-start: ${APP_INDEX_REBUILD:false}
+    # Biais de proximite (/geocoding/search?lat=&lon=) : echelle de decroissance en metres.
+    # finalScore = scoreTexte * scale / (scale + distance). A `scale` metres, le score est divise
+    # par 2 ; au-dela il decroit doucement. Plus la valeur est petite, plus la proximite domine.
+    proximity-scale-meters: ${APP_GEOCODING_PROXIMITY_SCALE:10000}
 
 # ---------------------------------------------------------------------------
 # Solveur Timefold : temps alloue a l'optimisation d'une tournee.

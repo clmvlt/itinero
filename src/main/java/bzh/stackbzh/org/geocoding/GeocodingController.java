@@ -45,16 +45,40 @@ public class GeocodingController {
     @GetMapping("/search")
     @Operation(summary = "Rechercher une adresse",
             description = """
-                    Recherche plein texte avec autocompletion. Renvoie les adresses les plus pertinentes \
-                    (triees par score decroissant), avec leurs coordonnees GPS.
+                    Recherche plein texte avec autocompletion. Renvoie les resultats les plus pertinents \
+                    (tries par score decroissant), avec leurs coordonnees GPS.
+
+                    **Niveau de resultat (voie vs adresse precise)** — automatique selon la requete :
+                    - Si la requete ne contient **aucun numero de voie** (ex : `rue du bocage`), les resultats \
+                    sont **agreges au niveau de la voie** : une seule entree par rue distincte (commune + code \
+                    postal), `type=street`, `houseNumber` vide, libelle sans numero. On ne renvoie donc plus une \
+                    longue liste de numeros d'une meme rue, mais la liste des rues qui existent.
+                    - Si la requete contient un numero (ex : `12 rue du bocage`), les resultats sont des **adresses \
+                    precises** (`type=housenumber`), comme auparavant. Un numero est un jeton de 1 a 4 chiffres \
+                    (eventuellement suivi d'une lettre : `12b`) ; un code postal a 5 chiffres n'est pas considere \
+                    comme un numero.
+
+                    **Pertinence** — la voie dont le nom correspond exactement au texte saisi (numero ignore) \
+                    est privilegiee, devant les correspondances partielles (ex : `rue du bocage` fait remonter \
+                    les `Rue du Bocage` avant `Rue du Parc du Bocage`).
+
+                    **Biais de proximite (optionnel)** — si `lat` et `lon` sont fournis, les resultats sont \
+                    classes en favorisant les plus proches de cette position (distance reelle ponderant le score). \
+                    Chaque resultat expose alors `distanceMeters`. La position **n'est pas obligatoire** ; sans \
+                    elle, le classement reste purement textuel et `distanceMeters` vaut `null`. Fournir `lat` sans \
+                    `lon` (ou l'inverse), ou des coordonnees hors bornes WGS84, renvoie **400**.
 
                     Exemples :
-                    - `q=rue du bocage` -> rues correspondantes dans toutes les communes
-                    - `q=12 rue de la paix par` -> autocomplete sur le dernier mot (`par`...)
+                    - `q=rue du bocage` -> liste des rues du Bocage (une par commune), sans numero
+                    - `q=rue du bocage&lat=48.11&lon=-1.68` -> les rues du Bocage les plus proches d'abord
+                    - `q=12 rue de la paix par` -> autocomplete adresse sur le dernier mot (`par`...)
 
-                    Chaque mot complet doit matcher (AND) ; le dernier mot est un prefixe.""")
+                    Chaque mot complet doit matcher (AND) ; le dernier mot est traite en prefixe (pas de \
+                    tolerance aux fautes de frappe : `bocaje` ne trouve pas `bocage`).""")
     @ApiResponses({
-            @ApiResponse(responseCode = "200", description = "Liste d'adresses (peut etre vide)"),
+            @ApiResponse(responseCode = "200", description = "Liste de resultats (peut etre vide)"),
+            @ApiResponse(responseCode = "400", description = "Parametres invalides (ex : lat sans lon, hors bornes)",
+                    content = @Content),
             @ApiResponse(responseCode = "503", description = "Index d'adresses indisponible", content = @Content)
     })
     public List<AddressResult> search(
@@ -62,8 +86,20 @@ public class GeocodingController {
                     example = "rue du bocage")
             @RequestParam("q") String query,
             @Parameter(description = "Nombre maximum de resultats (1 a " + MAX_LIMIT + ").", example = "10")
-            @RequestParam(value = "limit", defaultValue = "10") int limit) {
+            @RequestParam(value = "limit", defaultValue = "10") int limit,
+            @Parameter(description = "Latitude WGS84 de la position de reference (optionnel). Si fournie, `lon` doit l'etre aussi.",
+                    example = "48.1147")
+            @RequestParam(value = "lat", required = false) Double lat,
+            @Parameter(description = "Longitude WGS84 de la position de reference (optionnel). Si fournie, `lat` doit l'etre aussi.",
+                    example = "-1.6794")
+            @RequestParam(value = "lon", required = false) Double lon) {
+        if ((lat == null) != (lon == null)) {
+            throw new IllegalArgumentException("Pour un biais de proximite, fournir lat ET lon (ou aucun des deux).");
+        }
+        if (lat != null && (lat < -90 || lat > 90 || lon < -180 || lon > 180)) {
+            throw new IllegalArgumentException("Position invalide : lat doit etre dans [-90,90] et lon dans [-180,180].");
+        }
         int safeLimit = Math.max(1, Math.min(limit, MAX_LIMIT));
-        return service.search(query, safeLimit);
+        return service.search(query, safeLimit, lat, lon);
     }
 }
