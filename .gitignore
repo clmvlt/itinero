@@ -30,3 +30,6 @@ data/test-*
 *.log
 .DS_Store
 Thumbs.db
+
+# Guide interne (non publié)
+CLAUDE.md
