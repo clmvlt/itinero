@@ -134,6 +134,8 @@ public class RoutingEngine {
     public long travelTimeSeconds(double fromLat, double fromLon, double toLat, double toLon) {
         GraphHopper gh = ensureReady();
         GHRequest req = new GHRequest(fromLat, fromLon, toLat, toLon).setProfile(profile);
+        req.putHint("calc_points", false);
+        req.putHint("instructions", false);
         GHResponse rsp = gh.route(req);
         if (rsp.hasErrors()) {
             throw new RoutingException("Calcul de matrice impossible : " + rsp.getErrors());

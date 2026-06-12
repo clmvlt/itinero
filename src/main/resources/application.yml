@@ -49,7 +49,7 @@ app:
 timefold:
   solver:
     termination:
-      spent-limit: 5s
+      spent-limit: 1s
 
 # ---------------------------------------------------------------------------
 # Documentation OpenAPI / Swagger
