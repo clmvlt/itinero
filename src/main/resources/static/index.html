@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>spring-org — État de l'API</title>
+  <style>
+    :root {
+      --bg:#0f1419; --panel:#1a212b; --panel2:#222c38; --txt:#e6edf3; --muted:#8b98a5;
+      --green:#2ea043; --amber:#d29922; --red:#da3633; --grey:#6e7681; --blue:#388bfd; --border:#30363d;
+    }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+      background:var(--bg); color:var(--txt); line-height:1.5; }
+    .wrap { max-width:1000px; margin:0 auto; padding:24px 20px 60px; }
+    header { display:flex; align-items:center; flex-wrap:wrap; gap:16px; margin-bottom:8px; }
+    h1 { font-size:24px; margin:0; font-weight:700; }
+    h1 small { color:var(--muted); font-weight:400; font-size:14px; }
+    .badge { display:inline-flex; align-items:center; gap:6px; padding:4px 12px; border-radius:999px;
+      font-size:13px; font-weight:600; text-transform:uppercase; letter-spacing:.04em; }
+    .dot { width:9px; height:9px; border-radius:50%; display:inline-block; }
+    .b-green{background:rgba(46,160,67,.15);color:#4ac26b;} .b-green .dot{background:var(--green);}
+    .b-amber{background:rgba(210,153,34,.15);color:#e0a83e;} .b-amber .dot{background:var(--amber);animation:pulse 1.2s infinite;}
+    .b-red{background:rgba(218,54,51,.15);color:#f0524f;} .b-red .dot{background:var(--red);}
+    .b-grey{background:rgba(110,118,129,.15);color:#9aa4af;} .b-grey .dot{background:var(--grey);}
+    @keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:.3;} }
+    .meta { color:var(--muted); font-size:13px; display:flex; gap:18px; flex-wrap:wrap; margin:6px 0 22px; }
+    .meta b { color:var(--txt); font-weight:600; }
+    .grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+    @media(max-width:720px){ .grid{grid-template-columns:1fr;} }
+    .card { background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:16px 18px; }
+    .card h2 { font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted);
+      margin:0 0 12px; font-weight:600; }
+    .comp { display:flex; justify-content:space-between; align-items:flex-start; gap:12px;
+      padding:10px 0; border-top:1px solid var(--border); }
+    .comp:first-of-type { border-top:none; }
+    .comp .name { font-weight:600; }
+    .comp .detail { color:var(--muted); font-size:13px; }
+    .bar { height:8px; background:var(--panel2); border-radius:6px; overflow:hidden; margin-top:8px; }
+    .bar > span { display:block; height:100%; background:var(--blue); transition:width .4s ease; }
+    .bar.green > span { background:var(--green); }
+    .dl { margin:12px 0; }
+    .dl .row { display:flex; justify-content:space-between; font-size:13px; margin-bottom:2px; }
+    .dl .muted { color:var(--muted); }
+    table { width:100%; border-collapse:collapse; font-size:13px; }
+    td { padding:6px 0; border-top:1px solid var(--border); }
+    td:last-child { text-align:right; color:var(--muted); }
+    tr:first-child td { border-top:none; }
+    .links a { display:inline-block; margin-right:14px; color:var(--blue); text-decoration:none; font-size:14px; }
+    .links a:hover { text-decoration:underline; }
+    .full { grid-column:1 / -1; }
+    .foot { color:var(--muted); font-size:12px; margin-top:20px; text-align:center; }
+    .yes{color:var(--green);} .no{color:var(--red);}
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>spring-org <small>état de l'API</small></h1>
+    <span id="overall" class="badge b-grey"><span class="dot"></span><span id="overall-txt">…</span></span>
+  </header>
+  <div class="meta">
+    <span>Uptime <b id="uptime">—</b></span>
+    <span>Profil routing <b id="profile">—</b></span>
+    <span>Adresses indexées <b id="addr">—</b></span>
+    <span>Rafraîchi <b id="refreshed">—</b></span>
+  </div>
+
+  <div class="grid">
+    <div class="card full">
+      <h2>Sous-systèmes</h2>
+      <div id="components"></div>
+    </div>
+
+    <div class="card full" id="dl-card" style="display:none">
+      <h2>Téléchargements en cours</h2>
+      <div id="downloads"></div>
+    </div>
+
+    <div class="card">
+      <h2>Mémoire JVM</h2>
+      <div class="dl">
+        <div class="row"><span id="mem-txt" class="muted">—</span><span id="mem-pct" class="muted"></span></div>
+        <div class="bar"><span id="mem-bar" style="width:0%"></span></div>
+      </div>
+      <table>
+        <tr><td>Java</td><td id="java">—</td></tr>
+        <tr><td>PID</td><td id="pid">—</td></tr>
+        <tr><td>Cœurs CPU</td><td id="cores">—</td></tr>
+      </table>
+    </div>
+
+    <div class="card">
+      <h2>Fichiers de données</h2>
+      <table id="data"></table>
+    </div>
+
+    <div class="card full links">
+      <h2>Liens</h2>
+      <a id="l-swagger" href="/swagger-ui.html" target="_blank">Swagger UI ↗</a>
+      <a id="l-openapi" href="/v3/api-docs" target="_blank">OpenAPI JSON ↗</a>
+      <a href="/status" target="_blank">Statut brut (JSON) ↗</a>
+    </div>
+  </div>
+
+  <div class="foot">Mise à jour automatique toutes les 2 s · <span id="err"></span></div>
+</div>
+
+<script>
+  const STATE_BADGE = {
+    READY: 'b-green', INITIALIZING: 'b-amber', DOWNLOADING: 'b-amber',
+    WAITING: 'b-amber', DISABLED: 'b-grey', ERROR: 'b-red'
+  };
+  const OVERALL_BADGE = { UP: 'b-green', STARTING: 'b-amber', DEGRADED: 'b-red' };
+
+  function fmtBytes(b) {
+    if (b == null || b < 0) return '—';
+    if (b < 1024) return b + ' o';
+    const u = ['Ko','Mo','Go','To']; let i=-1, v=b;
+    do { v/=1024; i++; } while (v>=1024 && i<u.length-1);
+    return v.toFixed(v<10?1:0) + ' ' + u[i];
+  }
+  function fmtDuration(s) {
+    s = Math.max(0, Math.floor(s));
+    const h=Math.floor(s/3600), m=Math.floor((s%3600)/60), sec=s%60;
+    return (h?h+'h ':'') + (h||m?m+'m ':'') + sec + 's';
+  }
+  function badge(state) {
+    return '<span class="badge ' + (STATE_BADGE[state]||'b-grey') + '"><span class="dot"></span>' + state + '</span>';
+  }
+
+  async function tick() {
+    try {
+      const r = await fetch('/status', {cache:'no-store'});
+      const d = await r.json();
+      document.getElementById('err').textContent = '';
+
+      const ob = OVERALL_BADGE[d.status] || 'b-grey';
+      const oe = document.getElementById('overall');
+      oe.className = 'badge ' + ob;
+      document.getElementById('overall-txt').textContent = d.status;
+
+      document.getElementById('uptime').textContent = fmtDuration(d.uptimeSeconds);
+      document.getElementById('profile').textContent = d.routingProfile;
+      document.getElementById('addr').textContent = d.addressCount >= 0 ? d.addressCount.toLocaleString('fr-FR') : '—';
+      document.getElementById('refreshed').textContent = new Date().toLocaleTimeString('fr-FR');
+
+      // Composants
+      document.getElementById('components').innerHTML = (d.components||[]).map(c =>
+        '<div class="comp"><div><div class="name">' + c.name + '</div>' +
+        '<div class="detail">' + (c.detail||'') + '</div></div>' + badge(c.state) + '</div>'
+      ).join('') || '<div class="detail" style="color:var(--muted)">Initialisation…</div>';
+
+      // Téléchargements
+      const dls = (d.downloads||[]).filter(x => !x.done);
+      const dlCard = document.getElementById('dl-card');
+      if (dls.length) {
+        dlCard.style.display = '';
+        document.getElementById('downloads').innerHTML = dls.map(x => {
+          const pct = x.percent >= 0 ? x.percent : 0;
+          return '<div class="dl"><div class="row"><span>' + x.name + '</span>' +
+            '<span class="muted">' + fmtBytes(x.downloadedBytes) + ' / ' + fmtBytes(x.totalBytes) +
+            (x.percent>=0 ? ' · ' + x.percent + '%' : '') + '</span></div>' +
+            '<div class="bar"><span style="width:' + pct + '%"></span></div></div>';
+        }).join('');
+      } else {
+        dlCard.style.display = 'none';
+      }
+
+      // JVM
+      const j = d.jvm;
+      document.getElementById('mem-txt').textContent = fmtBytes(j.memUsedBytes) + ' / ' + fmtBytes(j.memMaxBytes);
+      document.getElementById('mem-pct').textContent = j.memUsedPercent + '%';
+      const mb = document.getElementById('mem-bar');
+      mb.style.width = Math.min(100, j.memUsedPercent) + '%';
+      mb.parentElement.className = 'bar' + (j.memUsedPercent > 85 ? '' : ' green');
+      document.getElementById('java').textContent = j.javaVersion;
+      document.getElementById('pid').textContent = j.pid;
+      document.getElementById('cores').textContent = j.cpuCores;
+
+      // Données
+      document.getElementById('data').innerHTML = (d.data||[]).map(f =>
+        '<tr><td>' + f.name + ' ' + (f.present ? '<span class="yes">✓</span>' : '<span class="no">✗</span>') +
+        '</td><td>' + (f.present ? (f.sizeBytes>=0 ? fmtBytes(f.sizeBytes) : 'présent') : 'absent') + '</td></tr>'
+      ).join('');
+
+      if (d.links) {
+        document.getElementById('l-swagger').href = d.links.swaggerUi;
+        document.getElementById('l-openapi').href = d.links.openApi;
+      }
+    } catch (e) {
+      document.getElementById('err').textContent = 'Connexion au serveur perdue…';
+    }
+  }
+
+  tick();
+  setInterval(tick, 2000);
+</script>
+</body>
+</html>

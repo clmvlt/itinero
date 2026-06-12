@@ -1,0 +1,71 @@
+spring:
+  application:
+    name: spring-org
+  jackson:
+    mapper:
+      # Accepter "polyline"/"POLYLINE"/"Polyline" indifferemment pour les enums.
+      accept-case-insensitive-enums: true
+  # Le chargement des donnees (graphe routier, index adresses) peut etre long :
+  # on autorise un demarrage tranquille.
+  lifecycle:
+    timeout-per-shutdown-phase: 30s
+
+server:
+  port: 8080
+
+# ---------------------------------------------------------------------------
+# Configuration applicative : emplacement des donnees locales.
+# Tout est local, aucune API externe n'est appelee a l'execution.
+# ---------------------------------------------------------------------------
+app:
+  # Telechargement automatique des donnees.
+  data:
+    # Telecharger les fichiers manquants au demarrage.
+    auto-download: ${APP_AUTO_DOWNLOAD:true}
+    # Mise a jour automatique : tous les dimanches a 8h (cron Spring : s m h ...).
+    update-cron: ${APP_UPDATE_CRON:0 0 8 * * SUN}
+  routing:
+    # Extrait OSM de la France (https://download.geofabrik.de/europe/france.html)
+    osm-file: ${APP_OSM_FILE:data/france-latest.osm.pbf}
+    osm-url: ${APP_OSM_URL:https://download.geofabrik.de/europe/france-latest.osm.pbf}
+    # Dossier de cache du graphe construit par GraphHopper (genere au 1er demarrage)
+    graph-cache: ${APP_GRAPH_CACHE:data/graph-cache}
+    profile: car
+    # Contraction Hierarchies : indispensable pour des matrices rapides (50x50)
+    use-ch: true
+  geocoding:
+    # Fichier BAN (https://adresse.data.gouv.fr/data/ban/adresses/latest/csv)
+    # adresses-france.csv.gz (semicolon-separated, gzip)
+    ban-file: ${APP_BAN_FILE:data/adresses-france.csv.gz}
+    ban-url: ${APP_BAN_URL:https://adresse.data.gouv.fr/data/ban/adresses/latest/csv/adresses-france.csv.gz}
+    # Dossier de l'index Lucene (genere au 1er demarrage a partir du CSV)
+    index-dir: ${APP_INDEX_DIR:data/address-index}
+    # Forcer la reconstruction de l'index meme s'il existe deja
+    rebuild-on-start: ${APP_INDEX_REBUILD:false}
+
+# ---------------------------------------------------------------------------
+# Solveur Timefold : temps alloue a l'optimisation d'une tournee.
+# ---------------------------------------------------------------------------
+timefold:
+  solver:
+    termination:
+      spent-limit: 5s
+
+# ---------------------------------------------------------------------------
+# Documentation OpenAPI / Swagger
+#   UI   : http://localhost:8080/swagger-ui.html
+#   JSON : http://localhost:8080/v3/api-docs
+# ---------------------------------------------------------------------------
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    operations-sorter: method
+    tags-sorter: alpha
+    display-request-duration: true
+
+logging:
+  level:
+    bzh.stackbzh.org: INFO
+    com.graphhopper: WARN

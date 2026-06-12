@@ -1,0 +1,32 @@
+# Build
+target/
+
+# Secrets / configuration locale (ne jamais versionner)
+.env
+**/.env
+deploy/.env
+*.local
+secrets.*
+
+# Donnees locales volumineuses (telechargees / generees : voir data/README.md)
+data/*.pbf
+data/*.osm.pbf
+data/*.csv
+data/*.csv.gz
+data/graph-cache/
+data/address-index/
+data/*-graph/
+data/test-*
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.classpath
+.project
+.settings/
+
+# Logs / OS
+*.log
+.DS_Store
+Thumbs.db
