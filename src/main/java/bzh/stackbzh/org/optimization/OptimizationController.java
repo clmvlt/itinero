@@ -58,10 +58,24 @@ public class OptimizationController {
                     Chaque `routes[]` expose aussi **`geometry`/`geometryPolyline`** : la trace COMPLETE de la \
                     tournee (depot -> arrets -> depot), a utiliser pour afficher le trace global d'un seul trait \
                     (les polylignes par segment ne se concatenent pas). Mettre `geometryFormat=NONE` \
-                    (ou `includeGeometry=false`) pour alleger la reponse.""")
+                    (ou `includeGeometry=false`) pour alleger la reponse.
+
+                    Points non rattachables au reseau routier (tolerance) : avant l'optimisation, chaque point \
+                    est teste contre le reseau routier. Une visite dont les coordonnees ne peuvent PAS etre \
+                    rattachees a une route (en mer, hors zone OSM couverte, reseau deconnecte) ou dont la route \
+                    la plus proche depasse le seuil `app.routing.max-snap-distance-meters` (1000 m par defaut) \
+                    est **ECARTEE** de l'optimisation : elle n'apparait dans aucune tournee et est listee dans \
+                    **`skippedVisits[]`** (avec `reason` = `UNROUTABLE` ou `TOO_FAR` et la distance de \
+                    rattachement). Une seule visite invalide ne fait donc PLUS echouer toute la requete (plus de \
+                    503 pour ce motif) : la tournee est calculee avec les points valides restants. Le client DOIT \
+                    inspecter `skippedVisits` et signaler/corriger ces points. Si TOUTES les visites sont ecartees, \
+                    la reponse est un 200 avec `routes` vide et tous les points dans `skippedVisits`. En revanche, \
+                    si c'est le **depot** qui n'est pas rattachable, l'optimisation est impossible -> **400**.""")
     @ApiResponses({
-            @ApiResponse(responseCode = "200", description = "Tournee(s) optimisee(s)"),
-            @ApiResponse(responseCode = "400", description = "Depot manquant ou liste de visites vide", content = @Content),
+            @ApiResponse(responseCode = "200", description = "Tournee(s) optimisee(s). Peut inclure `skippedVisits` "
+                    + "(points ecartes car non rattachables au reseau routier ou trop eloignes)."),
+            @ApiResponse(responseCode = "400", description = "Depot manquant/non rattachable au reseau routier, "
+                    + "ou liste de visites vide", content = @Content),
             @ApiResponse(responseCode = "503", description = "Routing indisponible (matrice non calculable)", content = @Content)
     })
     public OptimizeResponse optimize(@Valid @RequestBody OptimizeRequest request) {

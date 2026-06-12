@@ -8,8 +8,15 @@ import com.graphhopper.GraphHopper;
 import com.graphhopper.ResponsePath;
 import com.graphhopper.config.CHProfile;
 import com.graphhopper.config.Profile;
+import com.graphhopper.routing.ev.BooleanEncodedValue;
+import com.graphhopper.routing.ev.Subnetwork;
+import com.graphhopper.routing.util.DefaultSnapFilter;
+import com.graphhopper.routing.util.EdgeFilter;
+import com.graphhopper.routing.weighting.Weighting;
+import com.graphhopper.storage.index.Snap;
 import com.graphhopper.util.CustomModel;
 import com.graphhopper.util.GHUtility;
+import com.graphhopper.util.PMap;
 import com.graphhopper.util.PointList;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
@@ -33,21 +40,26 @@ public class RoutingEngine {
     private final String graphCache;
     private final String profile;
     private final boolean useCh;
+    private final double maxSnapDistanceMeters;
     private final StatusRegistry status;
 
     private final Object lock = new Object();
     private volatile GraphHopper hopper;
+    private volatile GraphHopper snapFilterHopper;
+    private volatile EdgeFilter snapFilter;
 
     public RoutingEngine(
             @Value("${app.routing.osm-file}") String osmFile,
             @Value("${app.routing.graph-cache}") String graphCache,
             @Value("${app.routing.profile}") String profile,
             @Value("${app.routing.use-ch}") boolean useCh,
+            @Value("${app.routing.max-snap-distance-meters:1000}") double maxSnapDistanceMeters,
             StatusRegistry status) {
         this.osmFile = osmFile;
         this.graphCache = graphCache;
         this.profile = profile;
         this.useCh = useCh;
+        this.maxSnapDistanceMeters = maxSnapDistanceMeters;
         this.status = status;
     }
 
@@ -143,6 +155,34 @@ public class RoutingEngine {
         return rsp.getBest().getTime() / 1000L;
     }
 
+    public PointCheck checkPoint(double lat, double lon) {
+        GraphHopper gh = ensureReady();
+        Snap snap = gh.getLocationIndex().findClosest(lat, lon, snapFilter(gh));
+        if (snap == null || !snap.isValid()) {
+            return new PointCheck(PointStatus.UNROUTABLE, Double.NaN);
+        }
+        double distance = snap.getQueryDistance();
+        if (maxSnapDistanceMeters > 0 && distance > maxSnapDistanceMeters) {
+            return new PointCheck(PointStatus.TOO_FAR, distance);
+        }
+        return new PointCheck(PointStatus.OK, distance);
+    }
+
+    private EdgeFilter snapFilter(GraphHopper gh) {
+        if (snapFilterHopper != gh) {
+            synchronized (lock) {
+                if (snapFilterHopper != gh) {
+                    Weighting weighting = gh.createWeighting(gh.getProfile(profile), new PMap());
+                    BooleanEncodedValue inSubnetwork =
+                            gh.getEncodingManager().getBooleanEncodedValue(Subnetwork.key(profile));
+                    snapFilter = new DefaultSnapFilter(weighting, inSubnetwork);
+                    snapFilterHopper = gh;
+                }
+            }
+        }
+        return snapFilter;
+    }
+
     private GraphHopper ensureReady() {
         GraphHopper gh = hopper;
         if (gh == null) {
@@ -186,6 +226,13 @@ public class RoutingEngine {
     }
 
     public record Leg(double distanceMeters, long durationSeconds, double[][] geometry) {
+    }
+
+    public enum PointStatus {
+        OK, TOO_FAR, UNROUTABLE
+    }
+
+    public record PointCheck(PointStatus status, double snapDistanceMeters) {
     }
 
     public static class RoutingException extends RuntimeException {

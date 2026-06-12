@@ -16,7 +16,33 @@ public record OptimizeResponse(
         @Schema(description = "Distance totale parcourue par tous les vehicules, en metres.", example = "184300.0")
         double totalDistanceMeters,
         @Schema(description = "Une entree par vehicule.")
-        List<RouteDto> routes) {
+        List<RouteDto> routes,
+        @Schema(description = "Visites EXCLUES de l'optimisation car non rattachables au reseau routier "
+                + "(coordonnees en mer, hors de la zone OSM couverte, ou trop eloignees de toute route selon "
+                + "`app.routing.max-snap-distance-meters`). Ces points ne figurent dans AUCUNE tournee : ils sont "
+                + "ignores pour ne pas faire echouer toute la requete. Liste vide si tous les points ont ete pris "
+                + "en compte. Le client DOIT verifier ce tableau et, le cas echeant, signaler/corriger ces points.")
+        List<SkippedVisitDto> skippedVisits) {
+
+    @Schema(description = "Visite ecartee de l'optimisation, avec le motif. N'apparait dans aucune tournee.")
+    public record SkippedVisitDto(
+            @Schema(description = "Identifiant de la visite (celui fourni, ou auto-genere `v<index>`).", example = "A")
+            String visitId,
+            @Schema(description = "Libelle de la visite (tel que fourni).", example = "Client A", nullable = true)
+            String name,
+            @Schema(description = "Latitude fournie.", example = "47.2184")
+            double lat,
+            @Schema(description = "Longitude fournie.", example = "-1.5536")
+            double lon,
+            @Schema(description = "Motif d'exclusion : `UNROUTABLE` (aucune route trouvable a proximite : point en "
+                    + "mer, hors zone couverte, ou reseau deconnecte) ou `TOO_FAR` (route la plus proche au-dela "
+                    + "du seuil `app.routing.max-snap-distance-meters`).",
+                    example = "TOO_FAR", allowableValues = {"UNROUTABLE", "TOO_FAR"})
+            String reason,
+            @Schema(description = "Distance (m) jusqu'a la route la plus proche. Renseignee pour `TOO_FAR` ; "
+                    + "null pour `UNROUTABLE` (aucune route trouvee).", example = "1830.0", nullable = true)
+            Double snapDistanceMeters) {
+    }
 
     @Schema(description = "Tournee d'un vehicule : visites dans l'ordre, depot -> points -> depot.")
     public record RouteDto(

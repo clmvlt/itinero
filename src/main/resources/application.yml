@@ -33,6 +33,10 @@ app:
     profile: car
     # Contraction Hierarchies : indispensable pour des matrices rapides (50x50)
     use-ch: true
+    # Distance maximale (en metres) toleree entre un point demande et la route la plus
+    # proche. Au-dela, le point est ECARTE de l'optimisation (statut TOO_FAR) au lieu
+    # d'etre rattache a une route lointaine. 0 = desactive (tout point routable accepte).
+    max-snap-distance-meters: ${APP_MAX_SNAP_DISTANCE:1000}
   geocoding:
     # Fichier BAN (https://adresse.data.gouv.fr/data/ban/adresses/latest/csv)
     # adresses-france.csv.gz (semicolon-separated, gzip)

@@ -22,6 +22,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ExecutionException;
+import java.util.stream.IntStream;
 
 @Service
 public class OptimizationService {
@@ -41,18 +42,34 @@ public class OptimizationService {
     }
 
     public OptimizeResponse optimize(OptimizeRequest request) {
+        RoutingEngine.PointCheck depotCheck =
+                routingEngine.checkPoint(request.depot().lat(), request.depot().lon());
+        if (depotCheck.status() != RoutingEngine.PointStatus.OK) {
+            throw new IllegalArgumentException(depotMessage(depotCheck));
+        }
+
         Location depot = new Location("depot", request.depot().lat(), request.depot().lon());
         List<Location> locations = new ArrayList<>();
         locations.add(depot);
 
         List<Visit> visits = new ArrayList<>();
+        List<OptimizeResponse.SkippedVisitDto> skipped = new ArrayList<>();
         int idx = 0;
         for (VisitDto dto : request.visits()) {
             String id = dto.id() != null ? dto.id() : "v" + idx;
+            idx++;
+            RoutingEngine.PointCheck check = routingEngine.checkPoint(dto.lat(), dto.lon());
+            if (check.status() != RoutingEngine.PointStatus.OK) {
+                skipped.add(toSkipped(id, dto, check));
+                continue;
+            }
             Location loc = new Location("loc-" + id, dto.lat(), dto.lon());
             locations.add(loc);
             visits.add(new Visit(id, dto.name(), loc, dto.resolvedDemand(), dto.resolvedServiceDurationSeconds()));
-            idx++;
+        }
+
+        if (visits.isEmpty()) {
+            return new OptimizeResponse("n/a", 0, 0, new ArrayList<>(), skipped);
         }
 
         List<double[]> coords = locations.stream()
@@ -76,7 +93,23 @@ public class OptimizationService {
         VehicleRoutePlan problem = new VehicleRoutePlan(vehicles, visits);
         VehicleRoutePlan solution = solve(problem);
 
-        return toResponse(solution, request, depot);
+        return toResponse(solution, request, depot, skipped);
+    }
+
+    private static String depotMessage(RoutingEngine.PointCheck check) {
+        if (check.status() == RoutingEngine.PointStatus.TOO_FAR) {
+            return "Depot trop eloigne du reseau routier ("
+                    + Math.round(check.snapDistanceMeters())
+                    + " m de la route la plus proche). Optimisation impossible.";
+        }
+        return "Depot non routable : aucune route a proximite (coordonnees en mer, "
+                + "hors de la zone couverte, ou reseau deconnecte). Optimisation impossible.";
+    }
+
+    private static OptimizeResponse.SkippedVisitDto toSkipped(String id, VisitDto dto, RoutingEngine.PointCheck check) {
+        String reason = check.status() == RoutingEngine.PointStatus.TOO_FAR ? "TOO_FAR" : "UNROUTABLE";
+        Double distance = Double.isNaN(check.snapDistanceMeters()) ? null : check.snapDistanceMeters();
+        return new OptimizeResponse.SkippedVisitDto(id, dto.name(), dto.lat(), dto.lon(), reason, distance);
     }
 
     private VehicleRoutePlan solve(VehicleRoutePlan problem) {
@@ -92,7 +125,8 @@ public class OptimizationService {
         }
     }
 
-    private OptimizeResponse toResponse(VehicleRoutePlan solution, OptimizeRequest request, Location depot) {
+    private OptimizeResponse toResponse(VehicleRoutePlan solution, OptimizeRequest request, Location depot,
+                                        List<OptimizeResponse.SkippedVisitDto> skipped) {
         LocalDateTime departureTime = request.departureTime() != null
                 ? request.departureTime() : LocalDateTime.now();
         GeometryFormat geometryFormat = request.resolvedGeometryFormat();
@@ -102,20 +136,21 @@ public class OptimizationService {
         double grandTotalDistance = 0;
 
         for (Vehicle vehicle : solution.getVehicles()) {
+            List<Visit> vehicleVisits = vehicle.getVisits();
+            RoutingEngine.Leg[] rawLegs = routeVehicleLegs(vehicleVisits, depot);
+
             List<OptimizeResponse.StopDto> stops = new ArrayList<>();
             double cumulativeDistance = 0;
             long cumulativeDriving = 0;
             long serviceTotal = 0;
             LocalDateTime clock = departureTime;
 
-            double prevLat = depot.getLat();
-            double prevLon = depot.getLon();
-
             List<double[]> routeGeometry = new ArrayList<>();
 
-            for (Visit visit : vehicle.getVisits()) {
+            for (int k = 0; k < vehicleVisits.size(); k++) {
+                Visit visit = vehicleVisits.get(k);
                 Location loc = visit.getLocation();
-                RoutingEngine.Leg raw = routingEngine.route(prevLat, prevLon, loc.getLat(), loc.getLon());
+                RoutingEngine.Leg raw = rawLegs[k];
                 OptimizeResponse.LegDto leg = toLegDto(raw, geometryFormat);
                 appendGeometry(routeGeometry, raw.geometry());
 
@@ -132,17 +167,15 @@ public class OptimizationService {
                         leg, cumulativeDistance, cumulativeDriving, arrival, departure, visit.getDemand()));
 
                 clock = departure;
-                prevLat = loc.getLat();
-                prevLon = loc.getLon();
             }
 
             OptimizeResponse.LegDto returnLeg;
             LocalDateTime returnTime;
-            if (vehicle.getVisits().isEmpty()) {
+            if (vehicleVisits.isEmpty()) {
                 returnLeg = new OptimizeResponse.LegDto(0, 0, null, null);
                 returnTime = departureTime;
             } else {
-                RoutingEngine.Leg rawReturn = routingEngine.route(prevLat, prevLon, depot.getLat(), depot.getLon());
+                RoutingEngine.Leg rawReturn = rawLegs[vehicleVisits.size()];
                 returnLeg = toLegDto(rawReturn, geometryFormat);
                 appendGeometry(routeGeometry, rawReturn.geometry());
                 cumulativeDistance += returnLeg.distanceMeters();
@@ -166,7 +199,34 @@ public class OptimizationService {
         }
 
         String score = solution.getScore() != null ? solution.getScore().toString() : "n/a";
-        return new OptimizeResponse(score, grandTotalDriving, grandTotalDistance, routes);
+        return new OptimizeResponse(score, grandTotalDriving, grandTotalDistance, routes, skipped);
+    }
+
+    private RoutingEngine.Leg[] routeVehicleLegs(List<Visit> visits, Location depot) {
+        if (visits.isEmpty()) {
+            return new RoutingEngine.Leg[0];
+        }
+        int legCount = visits.size() + 1;
+        double[][] from = new double[legCount][];
+        double[][] to = new double[legCount][];
+
+        Location first = visits.get(0).getLocation();
+        from[0] = new double[]{depot.getLat(), depot.getLon()};
+        to[0] = new double[]{first.getLat(), first.getLon()};
+        for (int k = 1; k < visits.size(); k++) {
+            Location prev = visits.get(k - 1).getLocation();
+            Location cur = visits.get(k).getLocation();
+            from[k] = new double[]{prev.getLat(), prev.getLon()};
+            to[k] = new double[]{cur.getLat(), cur.getLon()};
+        }
+        Location last = visits.get(visits.size() - 1).getLocation();
+        from[legCount - 1] = new double[]{last.getLat(), last.getLon()};
+        to[legCount - 1] = new double[]{depot.getLat(), depot.getLon()};
+
+        RoutingEngine.Leg[] legs = new RoutingEngine.Leg[legCount];
+        IntStream.range(0, legCount).parallel().forEach(k ->
+                legs[k] = routingEngine.route(from[k][0], from[k][1], to[k][0], to[k][1]));
+        return legs;
     }
 
     private static OptimizeResponse.LegDto toLegDto(RoutingEngine.Leg leg, GeometryFormat format) {
