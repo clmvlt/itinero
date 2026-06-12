@@ -4,9 +4,11 @@ target/
 # Secrets / configuration locale (ne jamais versionner)
 .env
 **/.env
-deploy/.env
 *.local
 secrets.*
+
+# Scripts de deploiement (contiennent la config serveur, non publies)
+deploy/
 
 # Donnees locales volumineuses (telechargees / generees : voir data/README.md)
 data/*.pbf

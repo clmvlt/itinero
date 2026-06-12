@@ -1,3 +1,0 @@
-#!/usr/bin/env bash
-# Lanceur POSIX : delegue a deploy.py (meme dossier).
-exec python3 "$(dirname "$0")/deploy.py" "$@"
