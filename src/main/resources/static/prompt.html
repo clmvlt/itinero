@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>spring-org — Prompt d'intégration API</title>
+  <style>
+    :root {
+      --bg:#0f1419; --panel:#1a212b; --panel2:#222c38; --txt:#e6edf3; --muted:#8b98a5;
+      --green:#2ea043; --blue:#388bfd; --border:#30363d;
+    }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+      background:var(--bg); color:var(--txt); line-height:1.5; }
+    .wrap { max-width:1000px; margin:0 auto; padding:24px 20px 60px; }
+    header { display:flex; align-items:center; flex-wrap:wrap; gap:16px; margin-bottom:6px; }
+    h1 { font-size:24px; margin:0; font-weight:700; }
+    h1 small { color:var(--muted); font-weight:400; font-size:14px; }
+    .intro { color:var(--muted); font-size:14px; margin:6px 0 18px; max-width:760px; }
+    .intro b { color:var(--txt); }
+    .bar { display:flex; gap:12px; flex-wrap:wrap; align-items:center; margin-bottom:14px; }
+    a.back { color:var(--blue); text-decoration:none; font-size:14px; }
+    a.back:hover { text-decoration:underline; }
+    button.copy { background:var(--green); color:#fff; border:none; border-radius:8px;
+      padding:10px 18px; font-size:14px; font-weight:600; cursor:pointer; }
+    button.copy:hover { filter:brightness(1.08); }
+    button.copy.ok { background:var(--blue); }
+    .hint { color:var(--muted); font-size:13px; }
+    .card { background:var(--panel); border:1px solid var(--border); border-radius:12px;
+      padding:0; overflow:hidden; }
+    pre { margin:0; padding:18px 20px; overflow:auto; max-height:70vh;
+      font-family:ui-monospace,SFMono-Regular,Consolas,Menlo,monospace; font-size:12.5px;
+      line-height:1.55; color:#cdd9e5; white-space:pre-wrap; word-break:break-word; }
+    pre::-webkit-scrollbar { width:10px; height:10px; }
+    pre::-webkit-scrollbar-thumb { background:var(--panel2); border-radius:6px; }
+    .foot { color:var(--muted); font-size:12px; margin-top:18px; text-align:center; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>spring-org <small>prompt d'intégration API</small></h1>
+  </header>
+  <p class="intro">
+    Copiez le texte ci-dessous et donnez-le à une IA (Claude, ChatGPT…) : il contient le
+    <b>contrat complet de l'API</b> — toutes les routes, leurs entrées/sorties, les codes
+    de réponse et toutes les spécificités — afin qu'elle implémente correctement un client.
+    L'URL de base de l'API en production est <b>https://ors.stack.bzh</b>.
+  </p>
+  <div class="bar">
+    <button id="copyBtn" class="copy">Copier le prompt</button>
+    <a class="back" href="/">← Retour au tableau de bord</a>
+    <span class="hint">Swagger : <a class="back" href="/swagger-ui.html" target="_blank">/swagger-ui.html</a> · OpenAPI : <a class="back" href="/v3/api-docs" target="_blank">/v3/api-docs</a></span>
+  </div>
+
+  <div class="card">
+    <pre id="prompt">Tu vas implémenter un client pour l'API HTTP « spring-org ». Respecte STRICTEMENT le contrat ci-dessous : noms de champs, types, valeurs par défaut, codes de réponse et règles métier. N'invente aucun champ ni aucun endpoint.
+
+====================================================================
+CONTEXTE GÉNÉRAL
+====================================================================
+spring-org est une API REST 100 % locale (aucune dépendance externe à l'exécution) réunissant trois briques indépendantes :
+  1. Routing      — itinéraires + matrices de temps (moteur GraphHopper, extrait OpenStreetMap France).
+  2. Optimisation — tournées VRP/TSP : ordre de passage optimal de N points (moteur Timefold).
+  3. Geocoding    — recherche / autocomplétion d'adresse (index Lucene sur la Base Adresse Nationale BAN).
+
+URL de base (production) : https://ors.stack.bzh
+  (en local : http://localhost:8080)
+
+Toutes les requêtes/réponses sont en JSON (Content-Type: application/json), SAUF /geocoding/search qui prend ses paramètres en query string. Les coordonnées sont toujours en WGS84 (degrés décimaux) : lat ∈ [-90,90], lon ∈ [-180,180].
+
+CONVENTIONS D'ERREUR (transverses à tous les endpoints) :
+  - 200 : succès.
+  - 400 : requête invalide (validation des champs). Corps = ProblemDetail (RFC 7807), media type application/problem+json.
+  - 503 : sous-système indisponible (ses données ne sont pas encore chargées, ou en cours de (re)construction). Corps = ProblemDetail.
+  Un client robuste DOIT gérer le 503 : interroger le ./status de la brique avant d'appeler, et/ou réessayer plus tard.
+
+DÉMARRAGE / DISPONIBILITÉ :
+  Chaque brique se charge de façon asynchrone au démarrage du serveur (téléchargement + construction des index/graphe, potentiellement plusieurs minutes au tout premier lancement). Tant qu'une brique n'est pas prête, ses endpoints renvoient 503. Vérifier la disponibilité via les endpoints status (voir plus bas).
+
+====================================================================
+TYPES PARTAGÉS
+====================================================================
+Coordinate (objet point géographique) :
+  { "lat": number (REQUIS), "lon": number (REQUIS) }   // WGS84, degrés décimaux
+
+GeometryFormat (enum, tolérant à la casse) :
+  "POINTS"   — géométrie en liste de points [lat,lon] (champ `geometry`). Lisible mais volumineux. (DÉFAUT)
+  "POLYLINE" — chaîne encodée (champ `geometryPolyline`), algorithme Google/OSRM précision 5 (~1 m),
+               beaucoup plus compacte pour les longs trajets. Décodable avec @mapbox/polyline.
+               Deltas dans l'ordre (latitude, longitude), facteur 1e5.
+  "NONE"     — aucune géométrie (réponse la plus légère).
+
+====================================================================
+1) ROUTING  — préfixe /routing
+====================================================================
+
+--- GET /routing/status ---
+But : savoir si le graphe routier est chargé. À interroger avant tout appel de routing.
+Réponse 200 : { "ready": boolean, "profile": string }   // ex : { "ready": true, "profile": "car" }
+Si ready=false → les autres endpoints routing renvoient 503.
+
+--- POST /routing/route ---
+But : calculer un itinéraire routier. DEUX modes mutuellement exclusifs :
+  • Point à point        : fournir `from` et `to`.
+  • Multi-points ordonné : fournir `points` (>= 2 éléments). L'itinéraire passe par TOUS les points
+    DANS L'ORDRE FOURNI (aucune réoptimisation — pour réordonner, utiliser /optimization/optimize).
+    Les tronçons consécutifs sont concaténés en une trace continue (sans doublon aux jonctions).
+Si `points` est présent (>=2), il PRIME sur `from`/`to`.
+
+Corps (RouteRequest) :
+  {
+    "from": Coordinate | null,            // requis si `points` absent
+    "to":   Coordinate | null,            // requis si `points` absent
+    "points": [Coordinate, ...] | null,   // mode multi-points, >= 2 éléments
+    "geometryFormat": "POINTS"|"POLYLINE"|"NONE"   // défaut POINTS
+  }
+Règle de validation : fournir SOIT (`from` ET `to`), SOIT `points` avec >= 2 éléments. Sinon → 400.
+
+Réponse 200 (RouteResponse) :
+  {
+    "distanceMeters": number,        // distance totale (cumulée sur tout le parcours)
+    "durationSeconds": integer,      // durée totale (cumulée)
+    "geometryFormat": string,        // format demandé, en rappel : "POINTS"|"POLYLINE"|"NONE"
+    "geometry": [[lat,lon], ...] | null,   // NON nul UNIQUEMENT si format = POINTS
+    "geometryPolyline": string | null      // renseigné pour POINTS ET POLYLINE ; null UNIQUEMENT si NONE
+  }
+À RETENIR : `geometryPolyline` est TOUJOURS rempli sauf en NONE (donc présent même en POINTS).
+Codes : 200 ok ; 400 corps invalide / coordonnées invalides ; 503 moteur indisponible.
+
+--- POST /routing/matrix ---
+But : matrice N×N des temps de trajet (secondes) entre tous les points fournis.
+Corps (MatrixRequest) :
+  { "points": [Coordinate, ...] }      // au moins 1 point (REQUIS, non vide). L'ordre est conservé.
+Réponse 200 (MatrixResponse) :
+  {
+    "size": integer,                       // N
+    "durationsSeconds": [[integer,...], ...]   // durationsSeconds[i][j] = temps i -> j, en secondes.
+  }                                            // Peut être ASYMÉTRIQUE (sens uniques). Diagonale = 0.
+Codes : 200 ok ; 400 liste vide/invalide ; 503 moteur indisponible.
+
+====================================================================
+2) OPTIMISATION  — préfixe /optimization
+====================================================================
+
+--- POST /optimization/optimize ---
+But : optimiser l'ordre de passage d'une liste de points depuis/vers un dépôt commun (VRP/TSP),
+en minimisant le temps de conduite total, sous contrainte de capacité optionnelle.
+Dépend du routing (calcule sa matrice via GraphHopper) : si routing KO → 503.
+
+Corps (OptimizeRequest) :
+  {
+    "depot": Coordinate (REQUIS),          // départ ET arrivée commun à tous les véhicules
+    "vehicleCount": integer | null,        // défaut 1 (1 = TSP simple). < 1 ramené à 1.
+    "vehicleCapacity": integer | null,     // null = capacité illimitée (aucune contrainte de charge)
+    "departureTime": "ISO-8601 LocalDateTime" | null,  // ex "2026-06-15T08:00:00" ; défaut = heure courante serveur
+    "geometryFormat": "POINTS"|"POLYLINE"|"NONE",      // défaut POINTS
+    "includeGeometry": boolean | null,     // DÉPRÉCIÉ — préférer geometryFormat. true->POINTS, false->NONE. Ignoré si geometryFormat fourni.
+    "visits": [ VisitDto, ... ] (REQUIS, non vide)
+  }
+
+VisitDto :
+  {
+    "id": string | null,        // optionnel ; auto-généré "v<index>" si absent
+    "name": string | null,      // libellé lisible, optionnel
+    "lat": number (REQUIS),
+    "lon": number (REQUIS),
+    "demand": integer | null,           // charge consommée au point ; défaut 0 ; comparée à vehicleCapacity
+    "serviceDurationSeconds": integer | null  // durée d'arrêt/service ; défaut 0 ; décale les heures d'arrivée suivantes
+  }
+
+CAS D'USAGE :
+  • 1 véhicule, capacité illimitée → simple optimisation d'ordre (TSP). Omettre vehicleCapacity et demand.
+    L'ordre optimal de passage = routes[0].stops[].visitId dans l'ordre du tableau.
+  • N véhicules + vehicleCapacity + demand → répartition capacitaire (CVRP).
+  Note : avec capacité illimitée et plusieurs véhicules, le solveur tend à n'en utiliser qu'un seul
+  (chaque véhicule ajoute un aller-retour au dépôt).
+
+TOLÉRANCE AUX POINTS NON RATTACHABLES (important) :
+  Avant l'optimisation, chaque point est testé contre le réseau routier. Une VISITE non rattachable
+  (en mer, hors zone OSM, réseau déconnecté) ou trop loin de toute route (> seuil ~1000 m par défaut)
+  est ÉCARTÉE : elle n'apparaît dans aucune tournée et figure dans `skippedVisits[]`. Une visite invalide
+  ne fait DONC PLUS échouer la requête (plus de 503 pour ce motif) ; la tournée est calculée avec les
+  visites valides restantes. Si TOUTES les visites sont écartées → 200 avec `routes` vide.
+  EN REVANCHE, si c'est le DÉPÔT qui n'est pas rattachable → 400.
+  → Le client DOIT inspecter `skippedVisits` et signaler/corriger ces points.
+
+Réponse 200 (OptimizeResponse) :
+  {
+    "score": string,                    // score Timefold "<dur>hard/<soft>soft" ; "0hard" = contraintes dures OK
+    "totalDrivingTimeSeconds": integer, // temps de conduite total, tous véhicules
+    "totalDistanceMeters": number,      // distance totale, tous véhicules
+    "routes": [ RouteDto, ... ],        // une entrée par véhicule
+    "skippedVisits": [ SkippedVisitDto, ... ]   // visites écartées (peut être vide)
+  }
+
+RouteDto (tournée d'un véhicule, dépôt -> arrêts -> dépôt) :
+  {
+    "vehicleId": string,                // ex "vehicle-0"
+    "departureTime": LocalDateTime,     // départ du dépôt
+    "returnTime": LocalDateTime,        // retour au dépôt
+    "drivingTimeSeconds": integer,
+    "serviceTimeSeconds": integer,
+    "distanceMeters": number,
+    "totalDemand": integer,             // somme des demandes des visites de la tournée
+    "stops": [ StopDto, ... ],          // arrêts dans l'ordre OPTIMAL de passage
+    "returnLeg": LegDto,                // segment du dernier arrêt vers le dépôt
+    "geometry": [[lat,lon], ...] | null,   // TRACE COMPLÈTE de la tournée ; non nul UNIQUEMENT si POINTS
+    "geometryPolyline": string | null      // TRACE COMPLÈTE en polyligne ; non nul pour POINTS et POLYLINE ; null si NONE
+  }
+  IMPORTANT : pour tracer toute la tournée d'un seul trait, utiliser route.geometry / route.geometryPolyline
+  (les géométries par segment NE se concatènent PAS proprement).
+
+StopDto (un arrêt) :
+  {
+    "visitId": string,
+    "name": string,
+    "lat": number, "lon": number,
+    "legFromPrevious": LegDto,          // segment depuis le point précédent (ou le dépôt) vers cet arrêt
+    "cumulativeDistanceMeters": number, // cumul depuis le dépôt
+    "cumulativeDrivingSeconds": integer,// cumul depuis le dépôt
+    "arrivalTime": LocalDateTime,
+    "departureTime": LocalDateTime,     // arrivalTime + durée de service
+    "demand": integer
+  }
+
+LegDto (un segment routier) :
+  {
+    "distanceMeters": number,
+    "durationSeconds": integer,
+    "geometry": [[lat,lon], ...] | null,   // non nul UNIQUEMENT si POINTS
+    "geometryPolyline": string | null      // non nul UNIQUEMENT si POLYLINE
+  }
+  NB : sur un LegDto (par segment), geometry suit POINTS et geometryPolyline suit POLYLINE
+  (contrairement aux champs au niveau RouteDto/RouteResponse où la polyline est remplie aussi en POINTS).
+
+SkippedVisitDto (visite écartée) :
+  {
+    "visitId": string,                  // id fourni ou auto-généré "v<index>"
+    "name": string | null,
+    "lat": number, "lon": number,       // coordonnées fournies
+    "reason": "UNROUTABLE" | "TOO_FAR", // UNROUTABLE = aucune route trouvable ; TOO_FAR = route la plus proche au-delà du seuil
+    "snapDistanceMeters": number | null // distance jusqu'à la route la plus proche ; renseigné pour TOO_FAR, null pour UNROUTABLE
+  }
+
+Codes : 200 (peut contenir skippedVisits) ; 400 dépôt manquant/non rattachable ou visits vide ; 503 routing indisponible.
+
+====================================================================
+3) GEOCODING  — préfixe /geocoding
+====================================================================
+
+--- GET /geocoding/status ---
+Réponse 200 : { "ready": boolean }   // si false → /search renvoie 503.
+
+--- GET /geocoding/search ---
+But : recherche / autocomplétion d'adresse plein texte (style GPS), avec coordonnées GPS.
+Paramètres de query :
+  q     : string (REQUIS)  — texte recherché (adresse, rue, ville…). L'autocomplétion s'applique au DERNIER mot.
+  limit : integer          — nb max de résultats, défaut 10, borné à [1,50] (valeurs hors bornes ramenées).
+  lat   : number | absent  — latitude de la position de référence (biais de proximité, optionnel).
+  lon   : number | absent  — longitude de la position de référence.
+Règle lat/lon : fournir les DEUX ou AUCUN. Fournir l'un sans l'autre, ou hors bornes WGS84 → 400.
+
+NIVEAU DE RÉSULTAT (automatique selon q) :
+  • Si q ne contient AUCUN numéro de voie (ex "rue du bocage") → résultats AGRÉGÉS PAR VOIE :
+    une seule entrée par rue distincte (clé rue+code postal+commune), type="street", houseNumber vide,
+    libellé sans numéro. On liste les rues qui existent, pas tous leurs numéros.
+  • Si q contient un numéro (ex "12 rue du bocage") → ADRESSES PRÉCISES, type="housenumber".
+    Un numéro = jeton de 1 à 4 chiffres, éventuellement suivi d'une lettre ("12b"). Un code postal à 5 chiffres
+    n'est PAS considéré comme un numéro de voie.
+
+PERTINENCE & PROXIMITÉ :
+  • La voie dont le nom correspond exactement au texte (numéro ignoré) est privilégiée devant les
+    correspondances partielles (ex : "rue du bocage" fait remonter "Rue du Bocage" avant "Rue du Parc du Bocage").
+  • Si lat+lon fournis → résultats classés en favorisant les plus proches (distance réelle pondérant le score),
+    et chaque résultat expose distanceMeters. Sans position → classement purement textuel, distanceMeters = null.
+
+LIMITE CONNUE : pas de tolérance aux fautes de frappe (le dernier mot est un préfixe strict ;
+"bocaje" ne trouve pas "bocage"). Chaque mot complet doit matcher (logique AND).
+
+Réponse 200 : tableau (éventuellement vide) de AddressResult :
+  {
+    "label": string,            // libellé complet lisible ; en type "street" le numéro est omis
+    "houseNumber": string,      // numéro de voie ; vide pour type "street"
+    "street": string,           // nom de la voie
+    "postcode": string,
+    "city": string,
+    "lat": number, "lon": number,    // pour "street", point représentatif (le plus proche de la position si fournie)
+    "type": "street" | "housenumber",
+    "distanceMeters": number | null, // distance à la position fournie ; null si aucune position fournie
+    "score": number              // pertinence (plus haut = mieux). Sans position : score Lucene ; avec : score pondéré par proximité
+  }
+Codes : 200 (liste, possiblement vide) ; 400 (lat sans lon, hors bornes) ; 503 index indisponible.
+
+Exemples :
+  GET /geocoding/search?q=rue du bocage
+  GET /geocoding/search?q=rue du bocage&lat=48.11&lon=-1.68
+  GET /geocoding/search?q=12 rue de la paix par&limit=5
+
+====================================================================
+4) STATUT / SANTÉ
+====================================================================
+--- GET /status ---
+Réponse 200 (StatusResponse) : état global de l'API.
+  {
+    "application": "spring-org",
+    "status": "UP" | "STARTING" | "DEGRADED",
+    "uptimeSeconds": integer,
+    "startedAtMillis": integer,
+    "routingProfile": string,
+    "addressCount": integer,         // nb d'adresses indexées (-1 si indispo)
+    "jvm": { "javaVersion": string, "pid": integer, "cpuCores": integer,
+             "memUsedBytes": integer, "memMaxBytes": integer, "memUsedPercent": integer },
+    "components": [ { "name": string, "state": string, "detail": string, "ready": boolean } ],
+        // state ∈ WAITING | DOWNLOADING | INITIALIZING | READY | DISABLED | ERROR
+    "downloads": [ { "name": string, "downloadedBytes": integer, "totalBytes": integer, "percent": integer, "done": boolean } ],
+    "data": [ { "name": string, "path": string, "present": boolean, "sizeBytes": integer } ],
+    "links": { "swaggerUi": "/swagger-ui.html", "openApi": "/v3/api-docs" }
+  }
+
+Autres endpoints utiles :
+  GET /                  → tableau de bord HTML (état en direct).
+  GET /swagger-ui.html   → Swagger UI.
+  GET /v3/api-docs       → spec OpenAPI JSON (source de vérité du contrat).
+
+====================================================================
+CONSIGNES D'IMPLÉMENTATION
+====================================================================
+- Configure l'URL de base sur https://ors.stack.bzh (paramétrable pour pointer vers http://localhost:8080 en dev).
+- Envoie/lis du JSON. Gère explicitement 400 et 503 (lire le ProblemDetail : champs `title`, `detail`, `status`).
+- Pour les longs trajets/tournées, demande geometryFormat="POLYLINE" et décode avec @mapbox/polyline
+  (précision 5, ordre lat,lon). Pour alléger au maximum, "NONE".
+- Sur /optimization/optimize, inspecte TOUJOURS skippedVisits avant d'afficher la tournée.
+- Avant d'appeler une brique, tu peux vérifier sa disponibilité via son endpoint ./status (ready=true).
+- Ne suppose aucune symétrie de la matrice des temps (sens uniques possibles).
+</pre>
+  </div>
+
+  <div class="foot">spring-org · prompt généré pour intégration assistée par IA · base : https://ors.stack.bzh</div>
+</div>
+
+<script>
+  const btn = document.getElementById('copyBtn');
+  btn.addEventListener('click', async () => {
+    const text = document.getElementById('prompt').textContent;
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch (e) {
+      const r = document.createRange();
+      r.selectNode(document.getElementById('prompt'));
+      const sel = window.getSelection();
+      sel.removeAllRanges(); sel.addRange(r);
+      try { document.execCommand('copy'); } catch (_) {}
+      sel.removeAllRanges();
+    }
+    const old = btn.textContent;
+    btn.textContent = '✓ Copié !';
+    btn.classList.add('ok');
+    setTimeout(() => { btn.textContent = old; btn.classList.remove('ok'); }, 1800);
+  });
+</script>
+</body>
+</html>

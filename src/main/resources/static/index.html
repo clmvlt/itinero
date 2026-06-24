@@ -48,6 +48,9 @@
     tr:first-child td { border-top:none; }
     .links a { display:inline-block; margin-right:14px; color:var(--blue); text-decoration:none; font-size:14px; }
     .links a:hover { text-decoration:underline; }
+    a.prompt-btn { margin-left:auto; display:inline-flex; align-items:center; gap:7px; text-decoration:none;
+      background:var(--green); color:#fff; padding:8px 16px; border-radius:8px; font-size:14px; font-weight:600; }
+    a.prompt-btn:hover { filter:brightness(1.08); }
     .full { grid-column:1 / -1; }
     .foot { color:var(--muted); font-size:12px; margin-top:20px; text-align:center; }
     .yes{color:var(--green);} .no{color:var(--red);}
@@ -58,6 +61,7 @@
   <header>
     <h1>spring-org <small>état de l'API</small></h1>
     <span id="overall" class="badge b-grey"><span class="dot"></span><span id="overall-txt">…</span></span>
+    <a class="prompt-btn" href="/prompt.html" title="Doc complète en format prompt, copiable pour une IA">📋 Prompt d'intégration</a>
   </header>
   <div class="meta">
     <span>Uptime <b id="uptime">—</b></span>
@@ -97,6 +101,7 @@
 
     <div class="card full links">
       <h2>Liens</h2>
+      <a href="/prompt.html">Prompt d'intégration (copiable) ↗</a>
       <a id="l-swagger" href="/swagger-ui.html" target="_blank">Swagger UI ↗</a>
       <a id="l-openapi" href="/v3/api-docs" target="_blank">OpenAPI JSON ↗</a>
       <a href="/status" target="_blank">Statut brut (JSON) ↗</a>
