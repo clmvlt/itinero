@@ -50,6 +50,11 @@ app:
     # finalScore = scoreTexte * scale / (scale + distance). A `scale` metres, le score est divise
     # par 2 ; au-dela il decroit doucement. Plus la valeur est petite, plus la proximite domine.
     proximity-scale-meters: ${APP_GEOCODING_PROXIMITY_SCALE:10000}
+  notifications:
+    # Webhook Discord ou sont signalees les erreurs de l'API : 503 (routing/geocoding
+    # indisponible), visites ecartees d'une optimisation (UNROUTABLE/TOO_FAR), depot
+    # non rattachable, erreurs internes inattendues (500). Vide = desactive.
+    discord-webhook-url: ${APP_DISCORD_WEBHOOK:}
 
 # ---------------------------------------------------------------------------
 # Solveur Timefold : temps alloue a l'optimisation d'une tournee.

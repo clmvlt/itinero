@@ -6,6 +6,7 @@ import bzh.stackbzh.org.optimization.domain.Location;
 import bzh.stackbzh.org.optimization.domain.Vehicle;
 import bzh.stackbzh.org.optimization.domain.VehicleRoutePlan;
 import bzh.stackbzh.org.optimization.domain.Visit;
+import bzh.stackbzh.org.notification.DiscordNotifier;
 import bzh.stackbzh.org.optimization.dto.OptimizeRequest;
 import bzh.stackbzh.org.optimization.dto.OptimizeResponse;
 import bzh.stackbzh.org.optimization.dto.VisitDto;
@@ -32,20 +33,26 @@ public class OptimizationService {
     private final MatrixService matrixService;
     private final RoutingEngine routingEngine;
     private final SolverManager<VehicleRoutePlan, UUID> solverManager;
+    private final DiscordNotifier notifier;
 
     public OptimizationService(MatrixService matrixService,
                                RoutingEngine routingEngine,
-                               SolverManager<VehicleRoutePlan, UUID> solverManager) {
+                               SolverManager<VehicleRoutePlan, UUID> solverManager,
+                               DiscordNotifier notifier) {
         this.matrixService = matrixService;
         this.routingEngine = routingEngine;
         this.solverManager = solverManager;
+        this.notifier = notifier;
     }
 
     public OptimizeResponse optimize(OptimizeRequest request) {
         RoutingEngine.PointCheck depotCheck =
                 routingEngine.checkPoint(request.depot().lat(), request.depot().lon());
         if (depotCheck.status() != RoutingEngine.PointStatus.OK) {
-            throw new IllegalArgumentException(depotMessage(depotCheck));
+            String message = depotMessage(depotCheck);
+            notifier.notifyError("Optimisation refusee : depot non rattachable (400)",
+                    message + "\nDepot : (" + request.depot().lat() + ", " + request.depot().lon() + ")");
+            throw new IllegalArgumentException(message);
         }
 
         Location depot = new Location("depot", request.depot().lat(), request.depot().lon());
@@ -66,6 +73,11 @@ public class OptimizationService {
             Location loc = new Location("loc-" + id, dto.lat(), dto.lon());
             locations.add(loc);
             visits.add(new Visit(id, dto.name(), loc, dto.resolvedDemand(), dto.resolvedServiceDurationSeconds()));
+        }
+
+        if (!skipped.isEmpty()) {
+            notifier.notifyError("Optimisation : " + skipped.size() + " visite(s) ecartee(s)",
+                    skippedDetails(skipped));
         }
 
         if (visits.isEmpty()) {
@@ -104,6 +116,22 @@ public class OptimizationService {
         }
         return "Depot non routable : aucune route a proximite (coordonnees en mer, "
                 + "hors de la zone couverte, ou reseau deconnecte). Optimisation impossible.";
+    }
+
+    private static String skippedDetails(List<OptimizeResponse.SkippedVisitDto> skipped) {
+        StringBuilder sb = new StringBuilder(
+                "Points non rattachables au reseau routier, exclus de la tournee :\n");
+        for (OptimizeResponse.SkippedVisitDto s : skipped) {
+            sb.append("- ").append(s.name() != null ? s.name() : s.visitId())
+                    .append(" (").append(s.lat()).append(", ").append(s.lon()).append(") : ")
+                    .append(s.reason());
+            if (s.snapDistanceMeters() != null) {
+                sb.append(" — route la plus proche a ")
+                        .append(Math.round(s.snapDistanceMeters())).append(" m");
+            }
+            sb.append('\n');
+        }
+        return sb.toString();
     }
 
     private static OptimizeResponse.SkippedVisitDto toSkipped(String id, VisitDto dto, RoutingEngine.PointCheck check) {
