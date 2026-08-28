@@ -37,6 +37,12 @@ app:
     # proche. Au-dela, le point est ECARTE de l'optimisation (statut TOO_FAR) au lieu
     # d'etre rattache a une route lointaine. 0 = desactive (tout point routable accepte).
     max-snap-distance-meters: ${APP_MAX_SNAP_DISTANCE:1000}
+  optimization:
+    # Attente maximale toleree (en secondes) devant une fenetre horaire pas encore ouverte.
+    # Au-dela, l'arret est considere comme ne correspondant pas au creneau (contrainte dure :
+    # le solveur reordonne pour l'eviter, sinon feasible=false + timeWindowStatus=WAITING_TOO_LONG).
+    # Surchargeable par requete (`maxWaitingSeconds`). 0 = desactive (attente illimitee).
+    max-waiting-seconds: ${APP_MAX_WAITING_SECONDS:900}
   geocoding:
     # Fichier BAN (https://adresse.data.gouv.fr/data/ban/adresses/latest/csv)
     # adresses-france.csv.gz (semicolon-separated, gzip)

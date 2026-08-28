@@ -12,14 +12,21 @@ public record OptimizeResponse(
                 + "(capacite ET fenetres horaires). Le `soft` = temps de conduite + temps d'attente (s), minimise.",
                 example = "0hard/-12450soft")
         String score,
-        @Schema(description = "true si TOUTES les contraintes dures sont respectees : aucune capacite depassee et "
-                + "aucun arret en retard sur sa fenetre horaire (`lateSeconds` = 0 partout). false = la tournee est "
+        @Schema(description = "true si TOUTES les contraintes dures sont respectees : aucune capacite depassee, "
+                + "aucun arret en retard sur sa fenetre horaire (`lateSeconds` = 0 partout) et aucune attente "
+                + "au-dela de `maxWaitingSeconds` (`excessiveWaitingSeconds` = 0 partout). false = la tournee est "
                 + "quand meme renvoyee (meilleure solution trouvee) mais au moins une contrainte est violee : "
-                + "inspecter `timeWindowViolations` et les `stops[].lateSeconds`.", example = "true")
+                + "inspecter `timeWindowViolations` et les `stops[].timeWindowStatus`.", example = "true")
         boolean feasible,
-        @Schema(description = "Nombre d'arrets dont l'heure d'arrivee depasse `timeWindowEnd` (fenetre horaire non "
-                + "respectee). 0 si toutes les fenetres sont tenues ou si aucune fenetre n'a ete fournie.", example = "0")
+        @Schema(description = "Nombre d'arrets dont la fenetre horaire n'est PAS respectee : arrivee apres "
+                + "`timeWindowEnd` (`timeWindowStatus=LATE`) OU attente avant `timeWindowStart` superieure a "
+                + "`maxWaitingSeconds` (`timeWindowStatus=WAITING_TOO_LONG`). 0 si toutes les fenetres sont tenues "
+                + "ou si aucune fenetre n'a ete fournie.", example = "0")
         int timeWindowViolations,
+        @Schema(description = "Attente maximale toleree devant une fenetre horaire effectivement appliquee, en "
+                + "secondes (valeur de la requete ou defaut serveur). null = pas de limite (desactive par `0`).",
+                example = "900", nullable = true)
+        Integer maxWaitingSeconds,
         @Schema(description = "Temps de conduite total cumule sur tous les vehicules, en secondes.", example = "12450")
         long totalDrivingTimeSeconds,
         @Schema(description = "Distance totale parcourue par tous les vehicules, en metres.", example = "184300.0")
@@ -124,12 +131,25 @@ public record OptimizeResponse(
                     + "null si non fournie.", example = "2026-06-15T23:00:00", nullable = true)
             LocalDateTime timeWindowEnd,
             @Schema(description = "Attente sur place avant l'ouverture de la fenetre, en secondes "
-                    + "(`serviceStartTime` - `arrivalTime`). 0 si pas d'attente / pas de fenetre.", example = "480")
+                    + "(`serviceStartTime` - `arrivalTime`). 0 si pas d'attente / pas de fenetre. Si elle depasse "
+                    + "`maxWaitingSeconds`, l'arret est en VIOLATION (`timeWindowStatus=WAITING_TOO_LONG`) ; les heures "
+                    + "restent calculees comme si le vehicule attendait l'ouverture.", example = "480")
             long waitingSeconds,
+            @Schema(description = "Part de l'attente qui depasse `maxWaitingSeconds` (`waitingSeconds` - limite si "
+                    + "positif). 0 = attente toleree (ou pas de limite). > 0 = VIOLATION : le solveur n'a pas trouve "
+                    + "d'ordre evitant d'arriver aussi tot ; l'arret ne correspond pas au creneau demande "
+                    + "(voir `feasible`).", example = "0")
+            long excessiveWaitingSeconds,
             @Schema(description = "Retard par rapport a `timeWindowEnd`, en secondes (`arrivalTime` - `timeWindowEnd` "
                     + "si positif). 0 = fenetre respectee (ou pas de fenetre). > 0 = VIOLATION : le solveur n'a pas "
                     + "trouve d'ordre permettant d'arriver a temps (voir `feasible`).", example = "0")
             long lateSeconds,
+            @Schema(description = "Respect de la fenetre horaire de cet arret : `OK` (fenetre tenue, ou pas de "
+                    + "fenetre), `LATE` (arrivee apres `timeWindowEnd`, voir `lateSeconds`), `WAITING_TOO_LONG` "
+                    + "(arrivee trop en avance : attente > `maxWaitingSeconds`, voir `excessiveWaitingSeconds`). "
+                    + "Tout statut autre que `OK` compte dans `timeWindowViolations` et rend `feasible=false`.",
+                    example = "OK", allowableValues = {"OK", "LATE", "WAITING_TOO_LONG"})
+            String timeWindowStatus,
             @Schema(description = "Demande consommee a ce point.", example = "1")
             int demand) {
     }

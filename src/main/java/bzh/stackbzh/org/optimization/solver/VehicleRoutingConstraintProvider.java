@@ -10,7 +10,8 @@ import bzh.stackbzh.org.optimization.domain.Visit;
 /**
  * Contraintes du VRP :
  * <ul>
- *   <li><b>Dur</b> : capacite du vehicule depassee ; arrivee apres la fin de la fenetre horaire (retard).</li>
+ *   <li><b>Dur</b> : capacite du vehicule depassee ; arrivee apres la fin de la fenetre horaire (retard) ;
+ *   attente devant une fenetre au-dela du maximum tolere ({@code Visit.maxWaitingSeconds}).</li>
  *   <li><b>Souple</b> : temps de conduite total ; temps d'attente devant une fenetre non encore ouverte.</li>
  * </ul>
  */
@@ -21,6 +22,7 @@ public class VehicleRoutingConstraintProvider implements ConstraintProvider {
         return new Constraint[]{
                 vehicleCapacity(factory),
                 arrivalAfterTimeWindowEnd(factory),
+                waitingExceedsMax(factory),
                 minimizeDrivingTime(factory),
                 minimizeWaitingTime(factory)
         };
@@ -39,6 +41,13 @@ public class VehicleRoutingConstraintProvider implements ConstraintProvider {
                 .filter(visit -> visit.getVehicle() != null && visit.isLate())
                 .penalizeLong(HardSoftLongScore.ONE_HARD, Visit::getLatenessSeconds)
                 .asConstraint("Arrivee apres la fin de la fenetre horaire");
+    }
+
+    Constraint waitingExceedsMax(ConstraintFactory factory) {
+        return factory.forEach(Visit.class)
+                .filter(visit -> visit.getVehicle() != null && visit.isWaitingTooLong())
+                .penalizeLong(HardSoftLongScore.ONE_HARD, Visit::getExcessiveWaitingSeconds)
+                .asConstraint("Attente trop longue avant l'ouverture de la fenetre horaire");
     }
 
     Constraint minimizeDrivingTime(ConstraintFactory factory) {

@@ -4,6 +4,7 @@ import bzh.stackbzh.org.routing.dto.Coordinate;
 import bzh.stackbzh.org.routing.dto.GeometryFormat;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
 
@@ -33,6 +34,18 @@ public record OptimizeRequest(
                 + "infaisables si la requete est calculee bien avant le depart reel).",
                 example = "2026-06-15T20:00:00", nullable = true)
         LocalDateTime departureTime,
+
+        @Schema(description = "Attente MAXIMALE toleree devant une fenetre horaire pas encore ouverte, en secondes. "
+                + "Si le vehicule arriverait en avance de plus que cette valeur sur `timeWindowStart`, l'arret est "
+                + "considere comme NE CORRESPONDANT PAS au creneau (contrainte dure) : le solveur reordonne la "
+                + "tournee pour l'eviter et, si aucun ordre ne le permet, la tournee est renvoyee avec "
+                + "`feasible=false`, `stops[].timeWindowStatus=WAITING_TOO_LONG` et "
+                + "`stops[].excessiveWaitingSeconds` > 0. Evite les tournees ou le vehicule poireaute 3 h devant "
+                + "un client. Omis (null) = valeur serveur `app.optimization.max-waiting-seconds` (900 s = 15 min "
+                + "par defaut). `0` = DESACTIVE (attente illimitee, seulement minimisee en soft). La valeur "
+                + "effectivement appliquee est renvoyee dans `maxWaitingSeconds` de la reponse.",
+                example = "900", defaultValue = "900", nullable = true, minimum = "0")
+        @Min(0) Integer maxWaitingSeconds,
 
         @Schema(description = "[Deprecie : preferer geometryFormat] Inclure la geometrie de chaque segment. "
                 + "Ignore si geometryFormat est fourni. true -> POINTS, false -> NONE.",

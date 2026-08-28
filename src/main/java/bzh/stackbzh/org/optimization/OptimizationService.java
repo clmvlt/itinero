@@ -14,6 +14,7 @@ import bzh.stackbzh.org.routing.GeometryEncoder;
 import bzh.stackbzh.org.routing.MatrixService;
 import bzh.stackbzh.org.routing.RoutingEngine;
 import bzh.stackbzh.org.routing.dto.GeometryFormat;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
@@ -36,15 +37,19 @@ public class OptimizationService {
     private final RoutingEngine routingEngine;
     private final SolverManager<VehicleRoutePlan, UUID> solverManager;
     private final DiscordNotifier notifier;
+    /** Attente max (s) par defaut devant une fenetre horaire ; <= 0 = illimitee. */
+    private final int defaultMaxWaitingSeconds;
 
     public OptimizationService(MatrixService matrixService,
                                RoutingEngine routingEngine,
                                SolverManager<VehicleRoutePlan, UUID> solverManager,
-                               DiscordNotifier notifier) {
+                               DiscordNotifier notifier,
+                               @Value("${app.optimization.max-waiting-seconds:900}") int defaultMaxWaitingSeconds) {
         this.matrixService = matrixService;
         this.routingEngine = routingEngine;
         this.solverManager = solverManager;
         this.notifier = notifier;
+        this.defaultMaxWaitingSeconds = defaultMaxWaitingSeconds;
     }
 
     public OptimizeResponse optimize(OptimizeRequest request) {
@@ -60,6 +65,9 @@ public class OptimizationService {
         // Origine des temps de la tournee : heure de depart estimee (ou maintenant). Toutes les
         // fenetres horaires sont converties en offsets (secondes) par rapport a cet instant.
         LocalDateTime departureTime = resolveDepartureTime(request);
+        // Attente max toleree devant une fenetre : requete, sinon defaut serveur ; 0 = desactive (null).
+        Integer maxWaiting = resolveMaxWaitingSeconds(request);
+        Long maxWaitingLong = maxWaiting == null ? null : maxWaiting.longValue();
 
         Location depot = new Location("depot", request.depot().lat(), request.depot().lon());
         List<Location> locations = new ArrayList<>();
@@ -82,7 +90,8 @@ public class OptimizationService {
             dtoById.put(id, dto);
             visits.add(new Visit(id, dto.name(), loc, dto.resolvedDemand(), dto.resolvedServiceDurationSeconds(),
                     offsetSeconds(departureTime, dto.timeWindowStart()),
-                    offsetSeconds(departureTime, dto.timeWindowEnd())));
+                    offsetSeconds(departureTime, dto.timeWindowEnd()),
+                    maxWaitingLong));
         }
 
         if (!skipped.isEmpty()) {
@@ -91,7 +100,7 @@ public class OptimizationService {
         }
 
         if (visits.isEmpty()) {
-            return new OptimizeResponse("n/a", true, 0, 0, 0, new ArrayList<>(), skipped);
+            return new OptimizeResponse("n/a", true, 0, maxWaiting, 0, 0, new ArrayList<>(), skipped);
         }
 
         List<double[]> coords = locations.stream()
@@ -115,7 +124,13 @@ public class OptimizationService {
         VehicleRoutePlan problem = new VehicleRoutePlan(vehicles, visits);
         VehicleRoutePlan solution = solve(problem);
 
-        return toResponse(solution, request, departureTime, depot, dtoById, skipped);
+        return toResponse(solution, request, departureTime, maxWaiting, depot, dtoById, skipped);
+    }
+
+    /** Limite d'attente effective : valeur de la requete, sinon defaut serveur ; null si desactivee (<= 0). */
+    private Integer resolveMaxWaitingSeconds(OptimizeRequest request) {
+        int v = request.maxWaitingSeconds() != null ? request.maxWaitingSeconds() : defaultMaxWaitingSeconds;
+        return v <= 0 ? null : v;
     }
 
     /** Heure de depart de la tournee, tronquee a la seconde (les offsets sont en secondes entieres). */
@@ -175,13 +190,13 @@ public class OptimizationService {
     }
 
     private OptimizeResponse toResponse(VehicleRoutePlan solution, OptimizeRequest request,
-                                        LocalDateTime departureTime, Location depot,
+                                        LocalDateTime departureTime, Integer maxWaiting, Location depot,
                                         Map<String, VisitDto> dtoById,
                                         List<OptimizeResponse.SkippedVisitDto> skipped) {
         GeometryFormat geometryFormat = request.resolvedGeometryFormat();
 
         List<OptimizeResponse.RouteDto> routes = new ArrayList<>();
-        List<OptimizeResponse.StopDto> lateStops = new ArrayList<>();
+        int violations = 0;
         long grandTotalDriving = 0;
         double grandTotalDistance = 0;
 
@@ -215,6 +230,8 @@ public class OptimizationService {
                 long waiting = Duration.between(arrival, serviceStart).getSeconds();
                 long late = windowEnd != null && arrival.isAfter(windowEnd)
                         ? Duration.between(windowEnd, arrival).getSeconds() : 0;
+                long excessiveWaiting = maxWaiting != null ? Math.max(0, waiting - maxWaiting) : 0;
+                String status = late > 0 ? "LATE" : excessiveWaiting > 0 ? "WAITING_TOO_LONG" : "OK";
                 int service = visit.getServiceDurationSeconds();
                 LocalDateTime departure = serviceStart.plusSeconds(service);
 
@@ -226,11 +243,11 @@ public class OptimizationService {
                 OptimizeResponse.StopDto stop = new OptimizeResponse.StopDto(
                         visit.getId(), visit.getName(), loc.getLat(), loc.getLon(),
                         leg, cumulativeDistance, cumulativeDriving,
-                        arrival, serviceStart, departure, windowStart, windowEnd, waiting, late,
-                        visit.getDemand());
+                        arrival, serviceStart, departure, windowStart, windowEnd, waiting, excessiveWaiting, late,
+                        status, visit.getDemand());
                 stops.add(stop);
-                if (late > 0) {
-                    lateStops.add(stop);
+                if (!"OK".equals(status)) {
+                    violations++;
                 }
 
                 clock = departure;
@@ -266,10 +283,10 @@ public class OptimizationService {
         }
 
         boolean hardOk = solution.getScore() != null && solution.getScore().hardScore() == 0;
-        boolean feasible = hardOk && lateStops.isEmpty();
+        boolean feasible = hardOk && violations == 0;
 
         String score = solution.getScore() != null ? solution.getScore().toString() : "n/a";
-        return new OptimizeResponse(score, feasible, lateStops.size(), grandTotalDriving, grandTotalDistance,
+        return new OptimizeResponse(score, feasible, violations, maxWaiting, grandTotalDriving, grandTotalDistance,
                 routes, skipped);
     }
 

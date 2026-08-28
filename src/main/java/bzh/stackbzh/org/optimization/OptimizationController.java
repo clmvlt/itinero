@@ -60,18 +60,29 @@ public class OptimizationController {
 
                     **Semantique des fenetres horaires** (chaque borne est optionnelle ; aucune = pas de contrainte) :
                     - `timeWindowStart` : si le vehicule arrive avant, il **attend** sur place jusqu'a l'ouverture \
-                    (`stops[].waitingSeconds`, `serviceStartTime` = ouverture). L'attente est minimisee (soft) mais \
-                    n'est jamais une erreur.
+                    (`stops[].waitingSeconds`, `serviceStartTime` = ouverture). L'attente est minimisee (soft) et \
+                    toleree jusqu'a **`maxWaitingSeconds`** (requete ; defaut serveur \
+                    `app.optimization.max-waiting-seconds` = 900 s = 15 min ; `0` = illimite). Au-dela, l'arret \
+                    est considere comme NE CORRESPONDANT PAS au creneau (contrainte dure) : le solveur reordonne \
+                    pour l'eviter et, si aucun ordre ne le permet, la tournee est renvoyee avec `feasible=false`, \
+                    `stops[].timeWindowStatus=WAITING_TOO_LONG` et `stops[].excessiveWaitingSeconds` > 0 (les \
+                    heures restent calculees comme si le vehicule attendait l'ouverture). Cela evite les \
+                    tournees ou le vehicule attend des heures devant un client ferme.
                     - `timeWindowEnd` : heure LIMITE d'**arrivee** (contrainte dure). Le solveur reordonne les points \
                     pour la tenir. Si c'est impossible (fenetre deja passee, trop de points, attentes en chaine), la \
                     tournee est quand meme renvoyee (meilleure solution trouvee) avec `feasible=false`, \
-                    `timeWindowViolations` > 0 et `stops[].lateSeconds` > 0 sur les arrets concernes ; le score \
-                    `hard` est negatif. Aucune notification Discord n'est emise (resultat metier normal). Ce n'est PAS un 400 : le \
+                    `timeWindowViolations` > 0, `stops[].timeWindowStatus=LATE` et `stops[].lateSeconds` > 0 sur \
+                    les arrets concernes ; le score `hard` est negatif. Aucune notification Discord n'est emise (resultat metier normal). Ce n'est PAS un 400 : le \
                     client doit lire `feasible` et decider (accepter le retard, changer `departureTime`, retirer un point).
                     - `timeWindowStart` > `timeWindowEnd` -> 400 (validation).
 
+                    Chaque arret expose `timeWindowStatus` : `OK`, `LATE` ou `WAITING_TOO_LONG` ; tout statut \
+                    autre que `OK` compte dans `timeWindowViolations` et rend `feasible=false`. La reponse rappelle \
+                    la limite appliquee dans `maxWaitingSeconds` (null = pas de limite).
+
                     Semantique des autres valeurs par defaut : `vehicleCount` omis = 1 ; `vehicleCapacity` omis = \
-                    illimite ; `demand` omis = 0 ; `serviceDurationSeconds` omis = 0. L'ordre des arrets retourne \
+                    illimite ; `demand` omis = 0 ; `serviceDurationSeconds` omis = 0 ; `maxWaitingSeconds` omis = \
+                    defaut serveur (900 s). L'ordre des arrets retourne \
                     EST l'ordre de passage optimal.
 
                     Note : avec capacite illimitee et plusieurs vehicules, le solveur tend a n'en utiliser qu'un \
@@ -80,7 +91,7 @@ public class OptimizationController {
                     La reponse est enrichie pour l'affichage : pour chaque segment (point precedent -> point), \
                     distance (m), duree (s) et **geometrie** ; pour chaque arret, distance/temps cumules, \
                     **`arrivalTime`, `serviceStartTime`, `departureTime`**, la fenetre demandee, \
-                    `waitingSeconds` et `lateSeconds`. Par tournee : `departureTime`, `returnTime`, temps de \
+                    `waitingSeconds`, `excessiveWaitingSeconds`, `lateSeconds` et `timeWindowStatus`. Par tournee : `departureTime`, `returnTime`, temps de \
                     conduite/service/attente. Chaque `routes[]` expose aussi **`geometry`/`geometryPolyline`** : \
                     la trace COMPLETE de la tournee (depot -> arrets -> depot), a utiliser pour afficher le trace \
                     global d'un seul trait (les polylignes par segment ne se concatenent pas). Mettre \
@@ -99,10 +110,12 @@ public class OptimizationController {
                     si c'est le **depot** qui n'est pas rattachable, l'optimisation est impossible -> **400**.""")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "Tournee(s) optimisee(s). Verifier `feasible` (false = "
-                    + "au moins une fenetre horaire ou capacite non tenable, details dans `stops[].lateSeconds`) "
+                    + "au moins une fenetre horaire (retard ou attente > `maxWaitingSeconds`) ou capacite non tenable, "
+                    + "details dans `stops[].timeWindowStatus`, `lateSeconds`, `excessiveWaitingSeconds`) "
                     + "et `skippedVisits` (points ecartes car non rattachables au reseau routier ou trop eloignes)."),
             @ApiResponse(responseCode = "400", description = "Depot manquant/non rattachable au reseau routier, "
-                    + "liste de visites vide, ou fenetre horaire invalide (`timeWindowStart` > `timeWindowEnd`)",
+                    + "liste de visites vide, fenetre horaire invalide (`timeWindowStart` > `timeWindowEnd`) ou "
+                    + "`maxWaitingSeconds` negatif",
                     content = @Content),
             @ApiResponse(responseCode = "503", description = "Routing indisponible (matrice non calculable)", content = @Content)
     })

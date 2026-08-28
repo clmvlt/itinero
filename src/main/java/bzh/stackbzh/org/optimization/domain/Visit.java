@@ -17,7 +17,9 @@ import ai.timefold.solver.core.api.domain.variable.PreviousElementShadowVariable
  * <p>Toutes les heures du domaine sont exprimees en <b>secondes ecoulees depuis l'heure de depart
  * de la tournee</b> ({@code OptimizeRequest.departureTime}), ce qui evite de manipuler des dates
  * dans le solveur. La fenetre horaire est optionnelle : {@code minStartSeconds} / {@code maxStartSeconds}
- * a {@code null} = pas de contrainte de ce cote.
+ * a {@code null} = pas de contrainte de ce cote. {@code maxWaitingSeconds} plafonne l'attente toleree
+ * devant une fenetre non encore ouverte ({@code null} = illimitee) : au-dela, l'arret est considere comme
+ * ne correspondant pas au creneau (contrainte dure {@code waitingExceedsMax}).
  */
 @PlanningEntity
 public class Visit {
@@ -32,6 +34,8 @@ public class Visit {
     private Long minStartSeconds;
     /** Fin de fenetre (offset en s depuis le depart) ; null = pas de borne haute. */
     private Long maxStartSeconds;
+    /** Attente maximale toleree avant l'ouverture de la fenetre (s) ; null = illimitee. */
+    private Long maxWaitingSeconds;
 
     @InverseRelationShadowVariable(sourceVariableName = "visits")
     private Vehicle vehicle;
@@ -55,6 +59,11 @@ public class Visit {
 
     public Visit(String id, String name, Location location, int demand, int serviceDurationSeconds,
                  Long minStartSeconds, Long maxStartSeconds) {
+        this(id, name, location, demand, serviceDurationSeconds, minStartSeconds, maxStartSeconds, null);
+    }
+
+    public Visit(String id, String name, Location location, int demand, int serviceDurationSeconds,
+                 Long minStartSeconds, Long maxStartSeconds, Long maxWaitingSeconds) {
         this.id = id;
         this.name = name;
         this.location = location;
@@ -62,6 +71,7 @@ public class Visit {
         this.serviceDurationSeconds = serviceDurationSeconds;
         this.minStartSeconds = minStartSeconds;
         this.maxStartSeconds = maxStartSeconds;
+        this.maxWaitingSeconds = maxWaitingSeconds;
     }
 
     public String getId() {
@@ -90,6 +100,10 @@ public class Visit {
 
     public Long getMaxStartSeconds() {
         return maxStartSeconds;
+    }
+
+    public Long getMaxWaitingSeconds() {
+        return maxWaitingSeconds;
     }
 
     public boolean hasTimeWindow() {
@@ -179,6 +193,21 @@ public class Visit {
 
     public boolean isLate() {
         return getLatenessSeconds() > 0;
+    }
+
+    /**
+     * Part de l'attente qui depasse {@code maxWaitingSeconds} (0 si pas de limite, pas d'attente ou
+     * attente dans la limite). > 0 = l'arret ne correspond pas au creneau (violation dure).
+     */
+    public long getExcessiveWaitingSeconds() {
+        if (maxWaitingSeconds == null) {
+            return 0;
+        }
+        return Math.max(0, getWaitingSeconds() - maxWaitingSeconds);
+    }
+
+    public boolean isWaitingTooLong() {
+        return getExcessiveWaitingSeconds() > 0;
     }
 
     /** Temps de trajet depuis l'element precedent (depot ou visite precedente), en s. */
