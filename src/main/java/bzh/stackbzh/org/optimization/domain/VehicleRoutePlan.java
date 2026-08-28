@@ -3,7 +3,6 @@ package bzh.stackbzh.org.optimization.domain;
 import ai.timefold.solver.core.api.domain.solution.PlanningEntityCollectionProperty;
 import ai.timefold.solver.core.api.domain.solution.PlanningScore;
 import ai.timefold.solver.core.api.domain.solution.PlanningSolution;
-import ai.timefold.solver.core.api.domain.solution.ProblemFactCollectionProperty;
 import ai.timefold.solver.core.api.domain.valuerange.ValueRangeProvider;
 import ai.timefold.solver.core.api.score.buildin.hardsoftlong.HardSoftLongScore;
 
@@ -15,7 +14,8 @@ public class VehicleRoutePlan {
     @PlanningEntityCollectionProperty
     private List<Vehicle> vehicles;
 
-    @ProblemFactCollectionProperty
+    /** Les visites sont des entites (variables fantomes : vehicule, precedent, heure d'arrivee) ET la plage de valeurs. */
+    @PlanningEntityCollectionProperty
     @ValueRangeProvider
     private List<Visit> visits;
 

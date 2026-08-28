@@ -10,7 +10,8 @@ import jakarta.validation.constraints.NotNull;
 import java.time.LocalDateTime;
 import java.util.List;
 
-@Schema(description = "Demande d'optimisation de tournee : depot commun, vehicules, points a visiter.")
+@Schema(description = "Demande d'optimisation de tournee : depot commun, vehicules, heure de depart estimee, "
+        + "points a visiter (avec fenetres horaires optionnelles).")
 public record OptimizeRequest(
         @Schema(description = "Depot : point de depart ET d'arrivee commun a tous les vehicules.",
                 requiredMode = Schema.RequiredMode.REQUIRED)
@@ -24,9 +25,13 @@ public record OptimizeRequest(
                 example = "10", nullable = true)
         Integer vehicleCapacity,
 
-        @Schema(description = "Heure de depart du depot (ISO-8601). Sert a calculer les heures d'arrivee/depart "
-                + "a chaque point. Si absent : heure courante du serveur.",
-                example = "2026-06-15T08:00:00", nullable = true)
+        @Schema(description = "Heure de depart ESTIMEE du depot (ISO-8601 LocalDateTime, heure locale, sans fuseau). "
+                + "C'est l'origine des temps de toute la tournee : les heures d'arrivee/depart de chaque arret en "
+                + "decoulent ET c'est par rapport a elle que le solveur evalue les fenetres horaires "
+                + "(`timeWindowStart`/`timeWindowEnd` des visites). A renseigner des qu'au moins une visite a une "
+                + "fenetre horaire, sinon l'heure courante du serveur est utilisee (ce qui peut rendre des fenetres "
+                + "infaisables si la requete est calculee bien avant le depart reel).",
+                example = "2026-06-15T20:00:00", nullable = true)
         LocalDateTime departureTime,
 
         @Schema(description = "[Deprecie : preferer geometryFormat] Inclure la geometrie de chaque segment. "
@@ -39,7 +44,8 @@ public record OptimizeRequest(
                 defaultValue = "POINTS", nullable = true)
         GeometryFormat geometryFormat,
 
-        @Schema(description = "Points a visiter (au moins 1).", requiredMode = Schema.RequiredMode.REQUIRED)
+        @Schema(description = "Points a visiter (au moins 1). Chaque point peut porter une fenetre horaire optionnelle.",
+                requiredMode = Schema.RequiredMode.REQUIRED)
         @NotEmpty @Valid List<VisitDto> visits) {
 
     public int resolvedVehicleCount() {

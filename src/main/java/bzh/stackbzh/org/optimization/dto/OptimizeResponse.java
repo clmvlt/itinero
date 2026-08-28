@@ -6,11 +6,20 @@ import java.time.LocalDateTime;
 import java.util.List;
 
 @Schema(description = "Resultat d'optimisation : tournees ordonnees par vehicule, avec distances, "
-        + "heures d'arrivee et geometrie du trace.")
+        + "heures d'arrivee/depart, respect des fenetres horaires et geometrie du trace.")
 public record OptimizeResponse(
-        @Schema(description = "Score Timefold (`<dur>hard/<soft>soft`). `0hard` = contraintes dures respectees.",
+        @Schema(description = "Score Timefold (`<dur>hard/<soft>soft`). `0hard` = contraintes dures respectees "
+                + "(capacite ET fenetres horaires). Le `soft` = temps de conduite + temps d'attente (s), minimise.",
                 example = "0hard/-12450soft")
         String score,
+        @Schema(description = "true si TOUTES les contraintes dures sont respectees : aucune capacite depassee et "
+                + "aucun arret en retard sur sa fenetre horaire (`lateSeconds` = 0 partout). false = la tournee est "
+                + "quand meme renvoyee (meilleure solution trouvee) mais au moins une contrainte est violee : "
+                + "inspecter `timeWindowViolations` et les `stops[].lateSeconds`.", example = "true")
+        boolean feasible,
+        @Schema(description = "Nombre d'arrets dont l'heure d'arrivee depasse `timeWindowEnd` (fenetre horaire non "
+                + "respectee). 0 si toutes les fenetres sont tenues ou si aucune fenetre n'a ete fournie.", example = "0")
+        int timeWindowViolations,
         @Schema(description = "Temps de conduite total cumule sur tous les vehicules, en secondes.", example = "12450")
         long totalDrivingTimeSeconds,
         @Schema(description = "Distance totale parcourue par tous les vehicules, en metres.", example = "184300.0")
@@ -48,14 +57,17 @@ public record OptimizeResponse(
     public record RouteDto(
             @Schema(description = "Identifiant du vehicule.", example = "vehicle-0")
             String vehicleId,
-            @Schema(description = "Heure de depart du depot.", example = "2026-06-15T08:00:00")
+            @Schema(description = "Heure de depart du depot (= `departureTime` de la requete).", example = "2026-06-15T20:00:00")
             LocalDateTime departureTime,
-            @Schema(description = "Heure de retour au depot (fin de tournee).", example = "2026-06-15T11:27:30")
+            @Schema(description = "Heure de retour au depot (fin de tournee), attentes incluses.", example = "2026-06-15T23:27:30")
             LocalDateTime returnTime,
             @Schema(description = "Temps de conduite total de la tournee, en secondes.", example = "12450")
             long drivingTimeSeconds,
             @Schema(description = "Temps de service total (arrets) de la tournee, en secondes.", example = "1500")
             long serviceTimeSeconds,
+            @Schema(description = "Temps d'attente total de la tournee, en secondes : somme des `waitingSeconds` des "
+                    + "arrets (vehicule arrive avant l'ouverture d'une fenetre horaire). 0 sans fenetres.", example = "600")
+            long waitingTimeSeconds,
             @Schema(description = "Distance totale de la tournee, en metres.", example = "184300.0")
             double distanceMeters,
             @Schema(description = "Somme des demandes des visites de la tournee.", example = "2")
@@ -78,11 +90,12 @@ public record OptimizeResponse(
             String geometryPolyline) {
     }
 
-    @Schema(description = "Un arret de la tournee, avec le segment depuis le point precedent et les cumuls.")
+    @Schema(description = "Un arret de la tournee, avec le segment depuis le point precedent, les cumuls, "
+            + "les heures (arrivee, debut de service, depart) et le respect de la fenetre horaire.")
     public record StopDto(
             @Schema(description = "Identifiant du point visite.", example = "A")
             String visitId,
-            @Schema(description = "Libelle du point.", example = "Client A")
+            @Schema(description = "Libelle du point.", example = "Pharmacie du Centre")
             String name,
             @Schema(description = "Latitude.", example = "47.2184")
             double lat,
@@ -94,10 +107,29 @@ public record OptimizeResponse(
             double cumulativeDistanceMeters,
             @Schema(description = "Temps de conduite cumule depuis le depot jusqu'a ce point, en secondes.", example = "4380")
             long cumulativeDrivingSeconds,
-            @Schema(description = "Heure d'arrivee a ce point.", example = "2026-06-15T09:13:00")
+            @Schema(description = "Heure d'ARRIVEE physique au point (depart du point precedent + trajet).",
+                    example = "2026-06-15T20:52:00")
             LocalDateTime arrivalTime,
-            @Schema(description = "Heure de depart de ce point (arrivee + duree de service).", example = "2026-06-15T09:18:00")
+            @Schema(description = "Heure de DEBUT du service/livraison : = `arrivalTime`, ou = `timeWindowStart` si le "
+                    + "vehicule est arrive en avance et a attendu l'ouverture de la fenetre.",
+                    example = "2026-06-15T21:00:00")
+            LocalDateTime serviceStartTime,
+            @Schema(description = "Heure de depart de ce point (`serviceStartTime` + duree de service).",
+                    example = "2026-06-15T21:05:00")
             LocalDateTime departureTime,
+            @Schema(description = "Fenetre horaire demandee (debut), telle que fournie. null si non fournie.",
+                    example = "2026-06-15T21:00:00", nullable = true)
+            LocalDateTime timeWindowStart,
+            @Schema(description = "Fenetre horaire demandee (fin = heure limite d'arrivee), telle que fournie. "
+                    + "null si non fournie.", example = "2026-06-15T23:00:00", nullable = true)
+            LocalDateTime timeWindowEnd,
+            @Schema(description = "Attente sur place avant l'ouverture de la fenetre, en secondes "
+                    + "(`serviceStartTime` - `arrivalTime`). 0 si pas d'attente / pas de fenetre.", example = "480")
+            long waitingSeconds,
+            @Schema(description = "Retard par rapport a `timeWindowEnd`, en secondes (`arrivalTime` - `timeWindowEnd` "
+                    + "si positif). 0 = fenetre respectee (ou pas de fenetre). > 0 = VIOLATION : le solveur n'a pas "
+                    + "trouve d'ordre permettant d'arriver a temps (voir `feasible`).", example = "0")
+            long lateSeconds,
             @Schema(description = "Demande consommee a ce point.", example = "1")
             int demand) {
     }

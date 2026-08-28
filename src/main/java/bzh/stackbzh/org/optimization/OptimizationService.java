@@ -16,7 +16,9 @@ import bzh.stackbzh.org.routing.RoutingEngine;
 import bzh.stackbzh.org.routing.dto.GeometryFormat;
 import org.springframework.stereotype.Service;
 
+import java.time.Duration;
 import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -55,11 +57,16 @@ public class OptimizationService {
             throw new IllegalArgumentException(message);
         }
 
+        // Origine des temps de la tournee : heure de depart estimee (ou maintenant). Toutes les
+        // fenetres horaires sont converties en offsets (secondes) par rapport a cet instant.
+        LocalDateTime departureTime = resolveDepartureTime(request);
+
         Location depot = new Location("depot", request.depot().lat(), request.depot().lon());
         List<Location> locations = new ArrayList<>();
         locations.add(depot);
 
         List<Visit> visits = new ArrayList<>();
+        Map<String, VisitDto> dtoById = new HashMap<>();
         List<OptimizeResponse.SkippedVisitDto> skipped = new ArrayList<>();
         int idx = 0;
         for (VisitDto dto : request.visits()) {
@@ -72,7 +79,10 @@ public class OptimizationService {
             }
             Location loc = new Location("loc-" + id, dto.lat(), dto.lon());
             locations.add(loc);
-            visits.add(new Visit(id, dto.name(), loc, dto.resolvedDemand(), dto.resolvedServiceDurationSeconds()));
+            dtoById.put(id, dto);
+            visits.add(new Visit(id, dto.name(), loc, dto.resolvedDemand(), dto.resolvedServiceDurationSeconds(),
+                    offsetSeconds(departureTime, dto.timeWindowStart()),
+                    offsetSeconds(departureTime, dto.timeWindowEnd())));
         }
 
         if (!skipped.isEmpty()) {
@@ -81,7 +91,7 @@ public class OptimizationService {
         }
 
         if (visits.isEmpty()) {
-            return new OptimizeResponse("n/a", 0, 0, new ArrayList<>(), skipped);
+            return new OptimizeResponse("n/a", true, 0, 0, 0, new ArrayList<>(), skipped);
         }
 
         List<double[]> coords = locations.stream()
@@ -99,13 +109,24 @@ public class OptimizationService {
         int capacity = request.vehicleCapacity() != null ? request.vehicleCapacity() : UNLIMITED_CAPACITY;
         List<Vehicle> vehicles = new ArrayList<>();
         for (int v = 0; v < request.resolvedVehicleCount(); v++) {
-            vehicles.add(new Vehicle("vehicle-" + v, capacity, depot));
+            vehicles.add(new Vehicle("vehicle-" + v, capacity, depot, 0L));
         }
 
         VehicleRoutePlan problem = new VehicleRoutePlan(vehicles, visits);
         VehicleRoutePlan solution = solve(problem);
 
-        return toResponse(solution, request, depot, skipped);
+        return toResponse(solution, request, departureTime, depot, dtoById, skipped);
+    }
+
+    /** Heure de depart de la tournee, tronquee a la seconde (les offsets sont en secondes entieres). */
+    private static LocalDateTime resolveDepartureTime(OptimizeRequest request) {
+        LocalDateTime t = request.departureTime() != null ? request.departureTime() : LocalDateTime.now();
+        return t.truncatedTo(ChronoUnit.SECONDS);
+    }
+
+    /** Offset (s) d'un instant par rapport a l'origine ; null si l'instant est absent. Peut etre negatif. */
+    private static Long offsetSeconds(LocalDateTime origin, LocalDateTime instant) {
+        return instant == null ? null : Duration.between(origin, instant).getSeconds();
     }
 
     private static String depotMessage(RoutingEngine.PointCheck check) {
@@ -153,13 +174,14 @@ public class OptimizationService {
         }
     }
 
-    private OptimizeResponse toResponse(VehicleRoutePlan solution, OptimizeRequest request, Location depot,
+    private OptimizeResponse toResponse(VehicleRoutePlan solution, OptimizeRequest request,
+                                        LocalDateTime departureTime, Location depot,
+                                        Map<String, VisitDto> dtoById,
                                         List<OptimizeResponse.SkippedVisitDto> skipped) {
-        LocalDateTime departureTime = request.departureTime() != null
-                ? request.departureTime() : LocalDateTime.now();
         GeometryFormat geometryFormat = request.resolvedGeometryFormat();
 
         List<OptimizeResponse.RouteDto> routes = new ArrayList<>();
+        List<OptimizeResponse.StopDto> lateStops = new ArrayList<>();
         long grandTotalDriving = 0;
         double grandTotalDistance = 0;
 
@@ -171,6 +193,7 @@ public class OptimizationService {
             double cumulativeDistance = 0;
             long cumulativeDriving = 0;
             long serviceTotal = 0;
+            long waitingTotal = 0;
             LocalDateTime clock = departureTime;
 
             List<double[]> routeGeometry = new ArrayList<>();
@@ -178,21 +201,37 @@ public class OptimizationService {
             for (int k = 0; k < vehicleVisits.size(); k++) {
                 Visit visit = vehicleVisits.get(k);
                 Location loc = visit.getLocation();
+                VisitDto dto = dtoById.get(visit.getId());
                 RoutingEngine.Leg raw = rawLegs[k];
                 OptimizeResponse.LegDto leg = toLegDto(raw, geometryFormat);
                 appendGeometry(routeGeometry, raw.geometry());
 
+                // Heures reelles (durees de trajet issues du routage segment par segment) avec la
+                // meme regle que le solveur : attente si en avance sur la fenetre, retard si au-dela.
+                LocalDateTime windowStart = dto != null ? dto.timeWindowStart() : null;
+                LocalDateTime windowEnd = dto != null ? dto.timeWindowEnd() : null;
                 LocalDateTime arrival = clock.plusSeconds(leg.durationSeconds());
+                LocalDateTime serviceStart = windowStart != null && arrival.isBefore(windowStart) ? windowStart : arrival;
+                long waiting = Duration.between(arrival, serviceStart).getSeconds();
+                long late = windowEnd != null && arrival.isAfter(windowEnd)
+                        ? Duration.between(windowEnd, arrival).getSeconds() : 0;
                 int service = visit.getServiceDurationSeconds();
-                LocalDateTime departure = arrival.plusSeconds(service);
+                LocalDateTime departure = serviceStart.plusSeconds(service);
 
                 cumulativeDistance += leg.distanceMeters();
                 cumulativeDriving += leg.durationSeconds();
                 serviceTotal += service;
+                waitingTotal += waiting;
 
-                stops.add(new OptimizeResponse.StopDto(
+                OptimizeResponse.StopDto stop = new OptimizeResponse.StopDto(
                         visit.getId(), visit.getName(), loc.getLat(), loc.getLon(),
-                        leg, cumulativeDistance, cumulativeDriving, arrival, departure, visit.getDemand()));
+                        leg, cumulativeDistance, cumulativeDriving,
+                        arrival, serviceStart, departure, windowStart, windowEnd, waiting, late,
+                        visit.getDemand());
+                stops.add(stop);
+                if (late > 0) {
+                    lateStops.add(stop);
+                }
 
                 clock = departure;
             }
@@ -221,13 +260,35 @@ public class OptimizationService {
 
             routes.add(new OptimizeResponse.RouteDto(
                     vehicle.getId(), departureTime, returnTime,
-                    cumulativeDriving, serviceTotal, cumulativeDistance,
+                    cumulativeDriving, serviceTotal, waitingTotal, cumulativeDistance,
                     vehicle.getTotalDemand(), stops, returnLeg,
                     routePoints, routePolyline));
         }
 
+        boolean hardOk = solution.getScore() != null && solution.getScore().hardScore() == 0;
+        boolean feasible = hardOk && lateStops.isEmpty();
+        if (!lateStops.isEmpty()) {
+            notifier.notifyError("Optimisation : " + lateStops.size() + " fenetre(s) horaire(s) non respectee(s)",
+                    lateDetails(departureTime, lateStops));
+        }
+
         String score = solution.getScore() != null ? solution.getScore().toString() : "n/a";
-        return new OptimizeResponse(score, grandTotalDriving, grandTotalDistance, routes, skipped);
+        return new OptimizeResponse(score, feasible, lateStops.size(), grandTotalDriving, grandTotalDistance,
+                routes, skipped);
+    }
+
+    private static String lateDetails(LocalDateTime departureTime, List<OptimizeResponse.StopDto> lateStops) {
+        StringBuilder sb = new StringBuilder("Depart ").append(departureTime)
+                .append(" — aucun ordre de passage ne permet d'arriver dans la fenetre pour :\n");
+        for (OptimizeResponse.StopDto s : lateStops) {
+            sb.append("- ").append(s.name() != null ? s.name() : s.visitId())
+                    .append(" : fenetre ")
+                    .append(s.timeWindowStart() != null ? s.timeWindowStart() : "…")
+                    .append(" -> ").append(s.timeWindowEnd())
+                    .append(", arrivee ").append(s.arrivalTime())
+                    .append(" (retard ").append(Math.round(s.lateSeconds() / 60.0)).append(" min)\n");
+        }
+        return sb.toString();
     }
 
     private RoutingEngine.Leg[] routeVehicleLegs(List<Visit> visits, Location depot) {
