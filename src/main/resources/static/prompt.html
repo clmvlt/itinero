@@ -158,6 +158,9 @@ Corps (OptimizeRequest) :
                                                        // défaut = heure courante serveur. Origine de toutes les heures
                                                        // de la réponse ET référence des fenêtres horaires → à TOUJOURS
                                                        // renseigner dès qu'une visite a une fenêtre.
+    "maxWaitingSeconds": integer | null,   // attente MAX tolérée devant une fenêtre pas encore ouverte (s).
+                                           // null = défaut serveur (900 s = 15 min) ; 0 = désactivé (attente illimitée).
+                                           // Au-delà → l'arrêt « ne correspond pas au créneau » (contrainte dure, cf. ci-dessous).
     "geometryFormat": "POINTS"|"POLYLINE"|"NONE",      // défaut POINTS
     "includeGeometry": boolean | null,     // DÉPRÉCIÉ — préférer geometryFormat. true->POINTS, false->NONE. Ignoré si geometryFormat fourni.
     "visits": [ VisitDto, ... ] (REQUIS, non vide)
@@ -185,9 +188,15 @@ FENÊTRES HORAIRES (VRPTW) :
         { "name": "Client B", "lat": 47.25, "lon": -1.60 },
         { "name": "Client C", "lat": 47.19, "lon": -1.50 } ] }
   • Le solveur réordonne les points pour arriver dans chaque fenêtre ; s'il arrive en avance il attend
-    (attente minimisée, jamais une erreur). S'il est IMPOSSIBLE d'arriver avant timeWindowEnd (fenêtre déjà
-    passée, trop de points…) → la tournée est quand même renvoyée (meilleure solution) avec feasible=false,
-    timeWindowViolations>0 et stops[].lateSeconds>0 ; ce n'est PAS un 400 : lire `feasible` et décider
+    (attente minimisée). L'attente est tolérée jusqu'à `maxWaitingSeconds` (défaut 15 min) : au-delà, l'arrêt
+    est considéré comme NE CORRESPONDANT PAS au créneau (contrainte dure) → le solveur réordonne pour l'éviter ;
+    si aucun ordre ne le permet, la tournée est renvoyée avec feasible=false, timeWindowViolations>0,
+    stops[].timeWindowStatus="WAITING_TOO_LONG" et stops[].excessiveWaitingSeconds>0 (les heures restent
+    calculées comme si le véhicule attendait l'ouverture). Passer maxWaitingSeconds=0 pour retrouver une
+    attente illimitée.
+  • S'il est IMPOSSIBLE d'arriver avant timeWindowEnd (fenêtre déjà passée, trop de points…) → la tournée est
+    quand même renvoyée (meilleure solution) avec feasible=false, timeWindowViolations>0,
+    stops[].timeWindowStatus="LATE" et stops[].lateSeconds>0 ; ce n'est PAS un 400 : lire `feasible` et décider
     (accepter le retard, changer departureTime, retirer un point).
 
 CAS D'USAGE :
@@ -209,8 +218,9 @@ TOLÉRANCE AUX POINTS NON RATTACHABLES (important) :
 Réponse 200 (OptimizeResponse) :
   {
     "score": string,                    // score Timefold "<dur>hard/<soft>soft" ; "0hard" = contraintes dures OK ; soft = conduite + attente
-    "feasible": boolean,                // true = capacités ET fenêtres horaires toutes respectées. false → voir timeWindowViolations / lateSeconds
-    "timeWindowViolations": integer,    // nb d'arrêts en retard sur leur timeWindowEnd (0 si OK ou sans fenêtres)
+    "feasible": boolean,                // true = capacités ET fenêtres horaires toutes respectées (ni retard, ni attente > maxWaitingSeconds). false → voir timeWindowViolations / stops[].timeWindowStatus
+    "timeWindowViolations": integer,    // nb d'arrêts avec timeWindowStatus ≠ OK (LATE ou WAITING_TOO_LONG) ; 0 si OK ou sans fenêtres
+    "maxWaitingSeconds": integer | null,// limite d'attente effectivement appliquée (requête ou défaut serveur) ; null = aucune limite
     "totalDrivingTimeSeconds": integer, // temps de conduite total, tous véhicules
     "totalDistanceMeters": number,      // distance totale, tous véhicules
     "routes": [ RouteDto, ... ],        // une entrée par véhicule
@@ -249,7 +259,9 @@ StopDto (un arrêt) :
     "timeWindowStart": LocalDateTime | null,  // fenêtre demandée, telle que fournie
     "timeWindowEnd": LocalDateTime | null,
     "waitingSeconds": integer,          // attente avant ouverture de la fenêtre (0 sinon)
+    "excessiveWaitingSeconds": integer, // part de l'attente au-delà de maxWaitingSeconds ; 0 = OK ; >0 = VIOLATION (feasible=false)
     "lateSeconds": integer,             // retard sur timeWindowEnd ; 0 = OK ; >0 = VIOLATION (feasible=false)
+    "timeWindowStatus": "OK"|"LATE"|"WAITING_TOO_LONG",  // OK = fenêtre tenue ou pas de fenêtre ; sinon violation
     "demand": integer
   }
 
@@ -272,8 +284,8 @@ SkippedVisitDto (visite écartée) :
     "snapDistanceMeters": number | null // distance jusqu'à la route la plus proche ; renseigné pour TOO_FAR, null pour UNROUTABLE
   }
 
-Codes : 200 (vérifier feasible + skippedVisits) ; 400 dépôt manquant/non rattachable, visits vide, ou
-timeWindowStart > timeWindowEnd ; 503 routing indisponible.
+Codes : 200 (vérifier feasible + skippedVisits) ; 400 dépôt manquant/non rattachable, visits vide,
+timeWindowStart > timeWindowEnd ou maxWaitingSeconds négatif ; 503 routing indisponible.
 
 ====================================================================
 3) GEOCODING  — préfixe /geocoding
