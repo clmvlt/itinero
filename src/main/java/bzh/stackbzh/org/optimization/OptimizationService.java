@@ -267,28 +267,10 @@ public class OptimizationService {
 
         boolean hardOk = solution.getScore() != null && solution.getScore().hardScore() == 0;
         boolean feasible = hardOk && lateStops.isEmpty();
-        if (!lateStops.isEmpty()) {
-            notifier.notifyError("Optimisation : " + lateStops.size() + " fenetre(s) horaire(s) non respectee(s)",
-                    lateDetails(departureTime, lateStops));
-        }
 
         String score = solution.getScore() != null ? solution.getScore().toString() : "n/a";
         return new OptimizeResponse(score, feasible, lateStops.size(), grandTotalDriving, grandTotalDistance,
                 routes, skipped);
-    }
-
-    private static String lateDetails(LocalDateTime departureTime, List<OptimizeResponse.StopDto> lateStops) {
-        StringBuilder sb = new StringBuilder("Depart ").append(departureTime)
-                .append(" — aucun ordre de passage ne permet d'arriver dans la fenetre pour :\n");
-        for (OptimizeResponse.StopDto s : lateStops) {
-            sb.append("- ").append(s.name() != null ? s.name() : s.visitId())
-                    .append(" : fenetre ")
-                    .append(s.timeWindowStart() != null ? s.timeWindowStart() : "…")
-                    .append(" -> ").append(s.timeWindowEnd())
-                    .append(", arrivee ").append(s.arrivalTime())
-                    .append(" (retard ").append(Math.round(s.lateSeconds() / 60.0)).append(" min)\n");
-        }
-        return sb.toString();
     }
 
     private RoutingEngine.Leg[] routeVehicleLegs(List<Visit> visits, Location depot) {

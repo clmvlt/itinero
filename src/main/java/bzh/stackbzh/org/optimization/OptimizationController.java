@@ -66,7 +66,7 @@ public class OptimizationController {
                     pour la tenir. Si c'est impossible (fenetre deja passee, trop de points, attentes en chaine), la \
                     tournee est quand meme renvoyee (meilleure solution trouvee) avec `feasible=false`, \
                     `timeWindowViolations` > 0 et `stops[].lateSeconds` > 0 sur les arrets concernes ; le score \
-                    `hard` est negatif. Une notification Discord est emise dans ce cas. Ce n'est PAS un 400 : le \
+                    `hard` est negatif. Aucune notification Discord n'est emise (resultat metier normal). Ce n'est PAS un 400 : le \
                     client doit lire `feasible` et decider (accepter le retard, changer `departureTime`, retirer un point).
                     - `timeWindowStart` > `timeWindowEnd` -> 400 (validation).
 
