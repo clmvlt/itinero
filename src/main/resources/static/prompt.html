@@ -144,8 +144,9 @@ Codes : 200 ok ; 400 liste vide/invalide ; 503 moteur indisponible.
 ====================================================================
 
 --- POST /optimization/optimize ---
-But : optimiser l'ordre de passage d'une liste de points depuis/vers un dépôt commun (VRP/TSP),
-en minimisant le temps de conduite total, sous contrainte de capacité optionnelle.
+But : optimiser l'ordre de passage d'une liste de points depuis/vers un dépôt commun (VRP/TSP/VRPTW),
+en minimisant le temps de conduite total (+ attentes), sous contrainte de capacité optionnelle et de
+FENÊTRES HORAIRES optionnelles par point (ex : pharmacie à livrer entre 21h et 23h).
 Dépend du routing (calcule sa matrice via GraphHopper) : si routing KO → 503.
 
 Corps (OptimizeRequest) :
@@ -153,7 +154,10 @@ Corps (OptimizeRequest) :
     "depot": Coordinate (REQUIS),          // départ ET arrivée commun à tous les véhicules
     "vehicleCount": integer | null,        // défaut 1 (1 = TSP simple). < 1 ramené à 1.
     "vehicleCapacity": integer | null,     // null = capacité illimitée (aucune contrainte de charge)
-    "departureTime": "ISO-8601 LocalDateTime" | null,  // ex "2026-06-15T08:00:00" ; défaut = heure courante serveur
+    "departureTime": "ISO-8601 LocalDateTime" | null,  // heure de DÉPART ESTIMÉE du dépôt, ex "2026-06-15T20:00:00" ;
+                                                       // défaut = heure courante serveur. Origine de toutes les heures
+                                                       // de la réponse ET référence des fenêtres horaires → à TOUJOURS
+                                                       // renseigner dès qu'une visite a une fenêtre.
     "geometryFormat": "POINTS"|"POLYLINE"|"NONE",      // défaut POINTS
     "includeGeometry": boolean | null,     // DÉPRÉCIÉ — préférer geometryFormat. true->POINTS, false->NONE. Ignoré si geometryFormat fourni.
     "visits": [ VisitDto, ... ] (REQUIS, non vide)
@@ -166,8 +170,25 @@ VisitDto :
     "lat": number (REQUIS),
     "lon": number (REQUIS),
     "demand": integer | null,           // charge consommée au point ; défaut 0 ; comparée à vehicleCapacity
-    "serviceDurationSeconds": integer | null  // durée d'arrêt/service ; défaut 0 ; décale les heures d'arrivée suivantes
+    "serviceDurationSeconds": integer | null, // durée d'arrêt/service ; défaut 0 ; décale les heures d'arrivée suivantes
+    "timeWindowStart": LocalDateTime | null,  // début de fenêtre de livraison (même référence que departureTime).
+                                              // Arrivée avant → le véhicule ATTEND sur place (waitingSeconds). null = pas de borne basse.
+    "timeWindowEnd": LocalDateTime | null     // heure LIMITE D'ARRIVÉE (contrainte dure). null = pas de borne haute.
+                                              // Les deux null = « pas d'importance » (aucune contrainte horaire).
+                                              // timeWindowStart > timeWindowEnd → 400.
   }
+
+FENÊTRES HORAIRES (VRPTW) :
+  • Exemple : départ 20h, pharmacie entre 21h et 23h, deux autres clients sans contrainte :
+    { "departureTime": "2026-06-15T20:00:00", "visits": [
+        { "name": "Pharmacie", "lat": 47.21, "lon": -1.55, "timeWindowStart": "2026-06-15T21:00:00", "timeWindowEnd": "2026-06-15T23:00:00" },
+        { "name": "Client B", "lat": 47.25, "lon": -1.60 },
+        { "name": "Client C", "lat": 47.19, "lon": -1.50 } ] }
+  • Le solveur réordonne les points pour arriver dans chaque fenêtre ; s'il arrive en avance il attend
+    (attente minimisée, jamais une erreur). S'il est IMPOSSIBLE d'arriver avant timeWindowEnd (fenêtre déjà
+    passée, trop de points…) → la tournée est quand même renvoyée (meilleure solution) avec feasible=false,
+    timeWindowViolations>0 et stops[].lateSeconds>0 ; ce n'est PAS un 400 : lire `feasible` et décider
+    (accepter le retard, changer departureTime, retirer un point).
 
 CAS D'USAGE :
   • 1 véhicule, capacité illimitée → simple optimisation d'ordre (TSP). Omettre vehicleCapacity et demand.
@@ -187,7 +208,9 @@ TOLÉRANCE AUX POINTS NON RATTACHABLES (important) :
 
 Réponse 200 (OptimizeResponse) :
   {
-    "score": string,                    // score Timefold "<dur>hard/<soft>soft" ; "0hard" = contraintes dures OK
+    "score": string,                    // score Timefold "<dur>hard/<soft>soft" ; "0hard" = contraintes dures OK ; soft = conduite + attente
+    "feasible": boolean,                // true = capacités ET fenêtres horaires toutes respectées. false → voir timeWindowViolations / lateSeconds
+    "timeWindowViolations": integer,    // nb d'arrêts en retard sur leur timeWindowEnd (0 si OK ou sans fenêtres)
     "totalDrivingTimeSeconds": integer, // temps de conduite total, tous véhicules
     "totalDistanceMeters": number,      // distance totale, tous véhicules
     "routes": [ RouteDto, ... ],        // une entrée par véhicule
@@ -197,10 +220,11 @@ Réponse 200 (OptimizeResponse) :
 RouteDto (tournée d'un véhicule, dépôt -> arrêts -> dépôt) :
   {
     "vehicleId": string,                // ex "vehicle-0"
-    "departureTime": LocalDateTime,     // départ du dépôt
-    "returnTime": LocalDateTime,        // retour au dépôt
+    "departureTime": LocalDateTime,     // départ du dépôt (= departureTime de la requête)
+    "returnTime": LocalDateTime,        // retour au dépôt (attentes incluses)
     "drivingTimeSeconds": integer,
     "serviceTimeSeconds": integer,
+    "waitingTimeSeconds": integer,      // somme des attentes aux fenêtres horaires (0 sans fenêtres)
     "distanceMeters": number,
     "totalDemand": integer,             // somme des demandes des visites de la tournée
     "stops": [ StopDto, ... ],          // arrêts dans l'ordre OPTIMAL de passage
@@ -219,8 +243,13 @@ StopDto (un arrêt) :
     "legFromPrevious": LegDto,          // segment depuis le point précédent (ou le dépôt) vers cet arrêt
     "cumulativeDistanceMeters": number, // cumul depuis le dépôt
     "cumulativeDrivingSeconds": integer,// cumul depuis le dépôt
-    "arrivalTime": LocalDateTime,
-    "departureTime": LocalDateTime,     // arrivalTime + durée de service
+    "arrivalTime": LocalDateTime,       // arrivée physique au point
+    "serviceStartTime": LocalDateTime,  // = arrivalTime, ou timeWindowStart si arrivé en avance (attente)
+    "departureTime": LocalDateTime,     // serviceStartTime + durée de service
+    "timeWindowStart": LocalDateTime | null,  // fenêtre demandée, telle que fournie
+    "timeWindowEnd": LocalDateTime | null,
+    "waitingSeconds": integer,          // attente avant ouverture de la fenêtre (0 sinon)
+    "lateSeconds": integer,             // retard sur timeWindowEnd ; 0 = OK ; >0 = VIOLATION (feasible=false)
     "demand": integer
   }
 
@@ -243,7 +272,8 @@ SkippedVisitDto (visite écartée) :
     "snapDistanceMeters": number | null // distance jusqu'à la route la plus proche ; renseigné pour TOO_FAR, null pour UNROUTABLE
   }
 
-Codes : 200 (peut contenir skippedVisits) ; 400 dépôt manquant/non rattachable ou visits vide ; 503 routing indisponible.
+Codes : 200 (vérifier feasible + skippedVisits) ; 400 dépôt manquant/non rattachable, visits vide, ou
+timeWindowStart > timeWindowEnd ; 503 routing indisponible.
 
 ====================================================================
 3) GEOCODING  — préfixe /geocoding
@@ -330,7 +360,8 @@ CONSIGNES D'IMPLÉMENTATION
 - Envoie/lis du JSON. Gère explicitement 400 et 503 (lire le ProblemDetail : champs `title`, `detail`, `status`).
 - Pour les longs trajets/tournées, demande geometryFormat="POLYLINE" et décode avec @mapbox/polyline
   (précision 5, ordre lat,lon). Pour alléger au maximum, "NONE".
-- Sur /optimization/optimize, inspecte TOUJOURS skippedVisits avant d'afficher la tournée.
+- Sur /optimization/optimize, inspecte TOUJOURS skippedVisits ET feasible avant d'afficher la tournée ;
+  renseigne departureTime dès qu'une visite a une fenêtre horaire.
 - Avant d'appeler une brique, tu peux vérifier sa disponibilité via son endpoint ./status (ready=true).
 - Ne suppose aucune symétrie de la matrice des temps (sens uniques possibles).
 </pre>
