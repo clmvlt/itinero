@@ -42,7 +42,7 @@ app:
     # Au-dela, l'arret est considere comme ne correspondant pas au creneau (contrainte dure :
     # le solveur reordonne pour l'eviter, sinon feasible=false + timeWindowStatus=WAITING_TOO_LONG).
     # Surchargeable par requete (`maxWaitingSeconds`). 0 = desactive (attente illimitee).
-    max-waiting-seconds: ${APP_MAX_WAITING_SECONDS:900}
+    max-waiting-seconds: ${APP_MAX_WAITING_SECONDS:3600}
   geocoding:
     # Fichier BAN (https://adresse.data.gouv.fr/data/ban/adresses/latest/csv)
     # adresses-france.csv.gz (semicolon-separated, gzip)

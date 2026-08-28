@@ -62,7 +62,7 @@ public class OptimizationController {
                     - `timeWindowStart` : si le vehicule arrive avant, il **attend** sur place jusqu'a l'ouverture \
                     (`stops[].waitingSeconds`, `serviceStartTime` = ouverture). L'attente est minimisee (soft) et \
                     toleree jusqu'a **`maxWaitingSeconds`** (requete ; defaut serveur \
-                    `app.optimization.max-waiting-seconds` = 900 s = 15 min ; `0` = illimite). Au-dela, l'arret \
+                    `app.optimization.max-waiting-seconds` = 3600 s = 1 h ; `0` = illimite). Au-dela, l'arret \
                     est considere comme NE CORRESPONDANT PAS au creneau (contrainte dure) : le solveur reordonne \
                     pour l'eviter et, si aucun ordre ne le permet, la tournee est renvoyee avec `feasible=false`, \
                     `stops[].timeWindowStatus=WAITING_TOO_LONG` et `stops[].excessiveWaitingSeconds` > 0 (les \
@@ -82,7 +82,7 @@ public class OptimizationController {
 
                     Semantique des autres valeurs par defaut : `vehicleCount` omis = 1 ; `vehicleCapacity` omis = \
                     illimite ; `demand` omis = 0 ; `serviceDurationSeconds` omis = 0 ; `maxWaitingSeconds` omis = \
-                    defaut serveur (900 s). L'ordre des arrets retourne \
+                    defaut serveur (3600 s). L'ordre des arrets retourne \
                     EST l'ordre de passage optimal.
 
                     Note : avec capacite illimitee et plusieurs vehicules, le solveur tend a n'en utiliser qu'un \

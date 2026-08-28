@@ -159,7 +159,7 @@ Corps (OptimizeRequest) :
                                                        // de la réponse ET référence des fenêtres horaires → à TOUJOURS
                                                        // renseigner dès qu'une visite a une fenêtre.
     "maxWaitingSeconds": integer | null,   // attente MAX tolérée devant une fenêtre pas encore ouverte (s).
-                                           // null = défaut serveur (900 s = 15 min) ; 0 = désactivé (attente illimitée).
+                                           // null = défaut serveur (3600 s = 1 h) ; 0 = désactivé (attente illimitée).
                                            // Au-delà → l'arrêt « ne correspond pas au créneau » (contrainte dure, cf. ci-dessous).
     "geometryFormat": "POINTS"|"POLYLINE"|"NONE",      // défaut POINTS
     "includeGeometry": boolean | null,     // DÉPRÉCIÉ — préférer geometryFormat. true->POINTS, false->NONE. Ignoré si geometryFormat fourni.
@@ -188,7 +188,7 @@ FENÊTRES HORAIRES (VRPTW) :
         { "name": "Client B", "lat": 47.25, "lon": -1.60 },
         { "name": "Client C", "lat": 47.19, "lon": -1.50 } ] }
   • Le solveur réordonne les points pour arriver dans chaque fenêtre ; s'il arrive en avance il attend
-    (attente minimisée). L'attente est tolérée jusqu'à `maxWaitingSeconds` (défaut 15 min) : au-delà, l'arrêt
+    (attente minimisée). L'attente est tolérée jusqu'à `maxWaitingSeconds` (défaut 1 h) : au-delà, l'arrêt
     est considéré comme NE CORRESPONDANT PAS au créneau (contrainte dure) → le solveur réordonne pour l'éviter ;
     si aucun ordre ne le permet, la tournée est renvoyée avec feasible=false, timeWindowViolations>0,
     stops[].timeWindowStatus="WAITING_TOO_LONG" et stops[].excessiveWaitingSeconds>0 (les heures restent

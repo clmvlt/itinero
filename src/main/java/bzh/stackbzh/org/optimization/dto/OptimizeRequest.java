@@ -41,10 +41,10 @@ public record OptimizeRequest(
                 + "tournee pour l'eviter et, si aucun ordre ne le permet, la tournee est renvoyee avec "
                 + "`feasible=false`, `stops[].timeWindowStatus=WAITING_TOO_LONG` et "
                 + "`stops[].excessiveWaitingSeconds` > 0. Evite les tournees ou le vehicule poireaute 3 h devant "
-                + "un client. Omis (null) = valeur serveur `app.optimization.max-waiting-seconds` (900 s = 15 min "
+                + "un client. Omis (null) = valeur serveur `app.optimization.max-waiting-seconds` (3600 s = 1 h "
                 + "par defaut). `0` = DESACTIVE (attente illimitee, seulement minimisee en soft). La valeur "
                 + "effectivement appliquee est renvoyee dans `maxWaitingSeconds` de la reponse.",
-                example = "900", defaultValue = "900", nullable = true, minimum = "0")
+                example = "3600", defaultValue = "3600", nullable = true, minimum = "0")
         @Min(0) Integer maxWaitingSeconds,
 
         @Schema(description = "[Deprecie : preferer geometryFormat] Inclure la geometrie de chaque segment. "

@@ -44,7 +44,7 @@ public class OptimizationService {
                                RoutingEngine routingEngine,
                                SolverManager<VehicleRoutePlan, UUID> solverManager,
                                DiscordNotifier notifier,
-                               @Value("${app.optimization.max-waiting-seconds:900}") int defaultMaxWaitingSeconds) {
+                               @Value("${app.optimization.max-waiting-seconds:3600}") int defaultMaxWaitingSeconds) {
         this.matrixService = matrixService;
         this.routingEngine = routingEngine;
         this.solverManager = solverManager;

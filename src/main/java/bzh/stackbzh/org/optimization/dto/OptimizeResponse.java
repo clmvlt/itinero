@@ -25,7 +25,7 @@ public record OptimizeResponse(
         int timeWindowViolations,
         @Schema(description = "Attente maximale toleree devant une fenetre horaire effectivement appliquee, en "
                 + "secondes (valeur de la requete ou defaut serveur). null = pas de limite (desactive par `0`).",
-                example = "900", nullable = true)
+                example = "3600", nullable = true)
         Integer maxWaitingSeconds,
         @Schema(description = "Temps de conduite total cumule sur tous les vehicules, en secondes.", example = "12450")
         long totalDrivingTimeSeconds,
