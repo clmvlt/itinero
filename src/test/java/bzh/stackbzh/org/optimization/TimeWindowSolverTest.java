@@ -138,4 +138,67 @@ class TimeWindowSolverTest {
         assertEquals(500L, a.getLatenessSeconds());
         assertEquals(-500, solution.getScore().hardScore());
     }
+
+    @Test
+    void sansLimiteDAttenteUneLongueAttenteResteFaisable() {
+        Location[] l = buildLocations();
+        Vehicle vehicle = new Vehicle("vehicle-0", UNLIMITED, l[0], 0L);
+        // A n'ouvre qu'a 3000 s : au mieux on y arrive a 1500 s (D-B-C-A) -> 1500 s d'attente, tolerees.
+        List<Visit> visits = List.of(
+                new Visit("A", "A", l[1], 0, 0, 3000L, null, null),
+                new Visit("B", "B", l[2], 0, 0),
+                new Visit("C", "C", l[3], 0, 0));
+
+        VehicleRoutePlan solution = solve(new VehicleRoutePlan(List.of(vehicle), visits));
+
+        assertEquals(0, solution.getScore().hardScore(), "sans limite, l'attente n'est jamais une violation");
+        Visit a = solution.getVehicles().get(0).getVisits().stream()
+                .filter(vi -> vi.getId().equals("A")).findFirst().orElseThrow();
+        assertTrue(a.getWaitingSeconds() > 0);
+        assertEquals(0, a.getExcessiveWaitingSeconds());
+    }
+
+    @Test
+    void attenteAuDelaDuMaximumEstUneViolationDureMinimisee() {
+        Location[] l = buildLocations();
+        Vehicle vehicle = new Vehicle("vehicle-0", UNLIMITED, l[0], 0L);
+        // A n'ouvre qu'a 3000 s, attente max 900 s. Arrivee la plus tardive possible a A : D-B (600) -C (900)
+        // -A (1500) -> attente 1500, dont 600 au-dela de la limite. Tout autre ordre attend davantage.
+        List<Visit> visits = List.of(
+                new Visit("A", "A", l[1], 0, 0, 3000L, null, 900L),
+                new Visit("B", "B", l[2], 0, 0, null, null, 900L),
+                new Visit("C", "C", l[3], 0, 0, null, null, 900L));
+
+        VehicleRoutePlan solution = solve(new VehicleRoutePlan(List.of(vehicle), visits));
+
+        assertEquals(-600, solution.getScore().hardScore(), "le solveur retarde A au maximum (B-C-A)");
+        Vehicle v = solution.getVehicles().get(0);
+        assertEquals(List.of("B", "C", "A"), v.getVisits().stream().map(Visit::getId).toList());
+        Visit a = v.getVisits().get(2);
+        assertEquals(1500L, a.getArrivalTimeSeconds());
+        assertEquals(1500L, a.getWaitingSeconds());
+        assertEquals(600L, a.getExcessiveWaitingSeconds());
+        assertTrue(a.isWaitingTooLong());
+        assertEquals(3000L, a.getStartServiceTimeSeconds(), "les heures restent calculees avec l'attente");
+    }
+
+    @Test
+    void laLimiteDAttenteEstRespecteeQuandUnOrdreLePermet() {
+        Location[] l = buildLocations();
+        Vehicle vehicle = new Vehicle("vehicle-0", UNLIMITED, l[0], 0L);
+        // A ouvre a 1400 s, attente max 300 s : A en 1er (arrivee 600) attendrait 800 s -> interdit ;
+        // D-B-C-A arrive a 1500 -> aucune attente.
+        List<Visit> visits = List.of(
+                new Visit("A", "A", l[1], 0, 0, 1400L, null, 300L),
+                new Visit("B", "B", l[2], 0, 0, null, null, 300L),
+                new Visit("C", "C", l[3], 0, 0, null, null, 300L));
+
+        VehicleRoutePlan solution = solve(new VehicleRoutePlan(List.of(vehicle), visits));
+
+        assertEquals(0, solution.getScore().hardScore());
+        Visit a = solution.getVehicles().get(0).getVisits().stream()
+                .filter(vi -> vi.getId().equals("A")).findFirst().orElseThrow();
+        assertTrue(a.getWaitingSeconds() <= 300);
+        assertEquals(0, a.getExcessiveWaitingSeconds());
+    }
 }
