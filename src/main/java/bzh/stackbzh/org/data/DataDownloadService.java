@@ -5,17 +5,34 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
+import java.net.http.HttpHeaders;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.attribute.FileTime;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
+import java.time.temporal.ChronoUnit;
 
+/**
+ * Telechargement des fichiers de donnees (OSM, BAN) et verification de leur fraicheur.
+ *
+ * <p>Convention de version : apres un telechargement, la date de modification (mtime) du fichier
+ * local est alignee sur l'en-tete HTTP {@code Last-Modified} du serveur. Le fichier porte ainsi sa
+ * <b>date de publication</b>, ce qui permet a {@link #isUpToDate(Path, RemoteInfo)} de comparer
+ * local/distant avec une simple requete HEAD, sans fichier de metadonnees ni re-telechargement.
+ * Un fichier depose a la main (mtime = date de copie) est considere comme a jour jusqu'a la
+ * prochaine publication distante.
+ */
 @Service
 public class DataDownloadService {
 
@@ -33,10 +50,57 @@ public class DataDownloadService {
         this.status = status;
     }
 
-    public boolean download(String url, Path target) {
+    /** Metadonnees d'un fichier distant obtenues par une requete HEAD (rien n'est telecharge). */
+    public record RemoteInfo(String url, String resolvedUrl, Instant lastModified, String etag, long contentLength) {
+
+        /** Nom du fichier reellement servi apres redirections (ex. {@code france-260909.osm.pbf} chez Geofabrik). */
+        public String resolvedFileName() {
+            String u = resolvedUrl != null ? resolvedUrl : url;
+            int q = u.indexOf('?');
+            if (q >= 0) {
+                u = u.substring(0, q);
+            }
+            int slash = u.lastIndexOf('/');
+            return slash >= 0 ? u.substring(slash + 1) : u;
+        }
+    }
+
+    /** Resultat d'un telechargement termine avec succes. */
+    public record DownloadResult(Path target, long bytes, Instant remoteLastModified, Duration duration) {
+    }
+
+    /** Interroge le serveur (HEAD, redirections suivies) sans telecharger : date de publication, ETag, taille. */
+    public RemoteInfo head(String url) {
+        try {
+            HttpRequest request = HttpRequest.newBuilder(URI.create(url))
+                    .timeout(Duration.ofSeconds(30))
+                    .method("HEAD", HttpRequest.BodyPublishers.noBody())
+                    .build();
+            HttpResponse<Void> response = httpClient.send(request, HttpResponse.BodyHandlers.discarding());
+            if (response.statusCode() != 200) {
+                throw new DataDownloadException("Statut HTTP inattendu " + response.statusCode() + " pour HEAD " + url);
+            }
+            HttpHeaders headers = response.headers();
+            return new RemoteInfo(url, response.uri().toString(),
+                    headers.firstValue("Last-Modified").map(DataDownloadService::parseHttpDate).orElse(null),
+                    headers.firstValue("ETag").orElse(null),
+                    headers.firstValueAsLong("Content-Length").orElse(-1));
+        } catch (DataDownloadException e) {
+            throw e;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new DataDownloadException("Verification interrompue pour " + url, e);
+        } catch (Exception e) {
+            throw new DataDownloadException("Verification impossible (HEAD " + url + ") : " + e.getMessage(), e);
+        }
+    }
+
+    public DownloadResult download(String url, Path target) {
+        Instant start = Instant.now();
+        String name = target.getFileName().toString();
         try {
             Files.createDirectories(target.getParent());
-            Path tmp = target.resolveSibling(target.getFileName() + ".part");
+            Path tmp = target.resolveSibling(name + ".part");
             Files.deleteIfExists(tmp);
 
             log.info("Telechargement {} -> {}", url, target);
@@ -52,18 +116,80 @@ public class DataDownloadService {
             }
 
             long total = response.headers().firstValueAsLong("Content-Length").orElse(-1);
-            String name = target.getFileName().toString();
+            Instant remoteLastModified = response.headers().firstValue("Last-Modified")
+                    .map(DataDownloadService::parseHttpDate).orElse(null);
             copyWithProgress(response.body(), tmp, total, name);
 
             Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING);
+            stampVersion(target, remoteLastModified);
             long size = Files.size(target);
             status.updateDownload(name, size, total > 0 ? total : size, true);
-            log.info("Telechargement termine : {} ({} octets)", target, size);
-            return true;
+            log.info("Telechargement termine : {} ({} octets, version publiee le {})", target, size, remoteLastModified);
+            return new DownloadResult(target, size, remoteLastModified, Duration.between(start, Instant.now()));
         } catch (DataDownloadException e) {
+            status.updateDownload(name, 0, 0, true);
             throw e;
         } catch (Exception e) {
+            status.updateDownload(name, 0, 0, true);
             throw new DataDownloadException("Echec du telechargement de " + url, e);
+        }
+    }
+
+    /**
+     * Le fichier local est-il a jour par rapport a la version publiee ? Comparaison des dates de
+     * publication (mtime local = Last-Modified du dernier telechargement) a la seconde pres ; si le
+     * serveur n'annonce pas de date, on se rabat sur la taille annoncee. Fichier absent = pas a jour.
+     */
+    public static boolean isUpToDate(Path local, RemoteInfo remote) {
+        if (!Files.isRegularFile(local)) {
+            return false;
+        }
+        Instant localVersion = localVersion(local);
+        if (remote.lastModified() != null && localVersion != null) {
+            Instant remoteSeconds = remote.lastModified().truncatedTo(ChronoUnit.SECONDS);
+            Instant localSeconds = localVersion.truncatedTo(ChronoUnit.SECONDS);
+            return !remoteSeconds.isAfter(localSeconds);
+        }
+        return remote.contentLength() > 0 && remote.contentLength() == sizeQuietly(local);
+    }
+
+    /** Date de version du fichier local (= date de publication distante apres un telechargement), ou null. */
+    public static Instant localVersion(Path file) {
+        if (!Files.isRegularFile(file)) {
+            return null;
+        }
+        try {
+            return Files.getLastModifiedTime(file).toInstant();
+        } catch (IOException e) {
+            return null;
+        }
+    }
+
+    /** Taille du fichier, -1 s'il est absent ou illisible. */
+    public static long sizeQuietly(Path file) {
+        try {
+            return Files.isRegularFile(file) ? Files.size(file) : -1;
+        } catch (IOException e) {
+            return -1;
+        }
+    }
+
+    static Instant parseHttpDate(String value) {
+        try {
+            return ZonedDateTime.parse(value, DateTimeFormatter.RFC_1123_DATE_TIME).toInstant();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static void stampVersion(Path target, Instant remoteLastModified) {
+        if (remoteLastModified == null) {
+            return;
+        }
+        try {
+            Files.setLastModifiedTime(target, FileTime.from(remoteLastModified));
+        } catch (IOException e) {
+            log.warn("Impossible d'aligner la date de {} sur la version publiee ({}).", target, remoteLastModified, e);
         }
     }
 
