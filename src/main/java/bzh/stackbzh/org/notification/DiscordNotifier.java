@@ -21,10 +21,11 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * Envoie les erreurs metier de l'API vers un webhook Discord (embed rouge).
+ * Envoie des notifications vers un webhook Discord (embed colore) : erreurs metier de l'API
+ * (rouge) et comptes rendus de mise a jour des donnees (vert / bleu / orange selon l'issue).
  *
  * - Desactive si {@code app.notifications.discord-webhook-url} est vide.
- * - Envoi ASYNCHRONE (thread daemon dedie) : ne ralentit jamais une requete.
+ * - Envoi ASYNCHRONE (thread daemon dedie) : ne ralentit jamais une requete ni une mise a jour.
  * - Ne leve JAMAIS d'exception : un echec d'envoi est seulement logge en WARN
  *   (sinon une panne Discord provoquerait des erreurs... qu'on essaierait de notifier).
  * - Anti-spam : un message identique (titre + details) n'est pas renvoye
@@ -36,10 +37,27 @@ public class DiscordNotifier {
 
     private static final Logger log = LoggerFactory.getLogger(DiscordNotifier.class);
 
+    /** Couleur de l'embed selon la nature du message. */
+    public enum Level {
+        INFO(0x388BFD),
+        SUCCESS(0x2EA043),
+        WARNING(0xD29922),
+        ERROR(0xE74C3C);
+
+        private final int color;
+
+        Level(int color) {
+            this.color = color;
+        }
+
+        public int color() {
+            return color;
+        }
+    }
+
     /** Limite Discord : 4096 chars par description d'embed. On garde de la marge. */
     private static final int MAX_DESCRIPTION = 3500;
     private static final long COOLDOWN_MS = 60_000;
-    private static final int COLOR_RED = 0xE74C3C;
 
     private final String webhookUrl;
     private final ObjectMapper mapper = new ObjectMapper();
@@ -62,13 +80,25 @@ public class DiscordNotifier {
         }
     }
 
+    public boolean isEnabled() {
+        return !webhookUrl.isEmpty();
+    }
+
     /**
-     * Signale une erreur sur Discord. Non bloquant, jamais d'exception.
+     * Signale une erreur sur Discord (embed rouge). Non bloquant, jamais d'exception.
      *
      * @param title   titre court de l'embed (ex : "Routing indisponible (503)")
      * @param details description detaillee (tronquee a {@value #MAX_DESCRIPTION} chars)
      */
     public void notifyError(String title, String details) {
+        notify(title, details, Level.ERROR);
+    }
+
+    /**
+     * Envoie un message sur Discord avec la couleur du niveau donne. Non bloquant, jamais d'exception,
+     * meme anti-spam que {@link #notifyError(String, String)}.
+     */
+    public void notify(String title, String details, Level level) {
         if (webhookUrl.isEmpty()) {
             return;
         }
@@ -82,10 +112,10 @@ public class DiscordNotifier {
             lastSent.clear();
         }
         lastSent.put(key, now);
-        executor.submit(() -> send(title, details));
+        executor.submit(() -> send(title, details, level));
     }
 
-    private void send(String title, String details) {
+    private void send(String title, String details, Level level) {
         try {
             String description = details == null ? "" : details;
             if (description.length() > MAX_DESCRIPTION) {
@@ -94,7 +124,7 @@ public class DiscordNotifier {
             Map<String, Object> embed = Map.of(
                     "title", title,
                     "description", description,
-                    "color", COLOR_RED,
+                    "color", level.color(),
                     "timestamp", Instant.now().toString());
             String body = mapper.writeValueAsString(Map.of("embeds", List.of(embed)));
             HttpRequest request = HttpRequest.newBuilder(URI.create(webhookUrl))
@@ -104,7 +134,7 @@ public class DiscordNotifier {
                     .build();
             HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString());
             if (response.statusCode() >= 300) {
-                log.warn("Webhook Discord : HTTP {} — {}", response.statusCode(), response.body());
+                log.warn("Webhook Discord : HTTP {} - {}", response.statusCode(), response.body());
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
