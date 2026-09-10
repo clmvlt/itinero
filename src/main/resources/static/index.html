@@ -99,6 +99,11 @@
       <table id="data"></table>
     </div>
 
+    <div class="card full">
+      <h2>Mise à jour des données</h2>
+      <table id="update"></table>
+    </div>
+
     <div class="card full links">
       <h2>Liens</h2>
       <a href="/prompt.html">Prompt d'intégration (copiable) ↗</a>
@@ -117,6 +122,7 @@
     WAITING: 'b-amber', DISABLED: 'b-grey', ERROR: 'b-red'
   };
   const OVERALL_BADGE = { UP: 'b-green', STARTING: 'b-amber', DEGRADED: 'b-red' };
+  const UPDATE_BADGE = { RUNNING: 'b-amber', SUCCESS: 'b-green', UP_TO_DATE: 'b-green', PARTIAL: 'b-red', FAILED: 'b-red' };
 
   function fmtBytes(b) {
     if (b == null || b < 0) return '—';
@@ -188,6 +194,23 @@
         '<tr><td>' + f.name + ' ' + (f.present ? '<span class="yes">✓</span>' : '<span class="no">✗</span>') +
         '</td><td>' + (f.present ? (f.sizeBytes>=0 ? fmtBytes(f.sizeBytes) : 'présent') : 'absent') + '</td></tr>'
       ).join('');
+
+      // Mise à jour des données (démarrage + cron)
+      const u = d.dataUpdate || {};
+      const last = u.last;
+      const fmtDate = ms => ms ? new Date(ms).toLocaleString('fr-FR') : '—';
+      const lastHtml = last
+        ? '<span class="badge ' + (UPDATE_BADGE[last.state] || 'b-grey') + '"><span class="dot"></span>' + last.state + '</span> ' +
+          last.trigger + ' · ' + fmtDate(last.startedAtMillis) + (last.finishedAtMillis ? ' → ' + fmtDate(last.finishedAtMillis) : ' (en cours)')
+        : 'aucune depuis le démarrage';
+      const nextHtml = u.autoDownload === false
+        ? 'désactivée (auto-download=false)'
+        : (u.nextScheduledAtMillis ? fmtDate(u.nextScheduledAtMillis) : '—') + (u.cron ? ' · cron ' + u.cron : '');
+      document.getElementById('update').innerHTML =
+        '<tr><td>Dernière exécution</td><td>' + lastHtml + '</td></tr>' +
+        (last && last.summary ? '<tr><td>Résultat</td><td>' + last.summary + '</td></tr>' : '') +
+        '<tr><td>Prochaine planifiée</td><td>' + nextHtml + '</td></tr>' +
+        '<tr><td>Au démarrage</td><td>' + (u.updateOnStart ? 'oui, si une version plus récente est publiée' : 'non') + '</td></tr>';
 
       if (d.links) {
         document.getElementById('l-swagger').href = d.links.swaggerUi;
