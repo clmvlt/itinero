@@ -17,11 +17,21 @@ public class StatusRegistry {
     public record DownloadInfo(String name, long downloadedBytes, long totalBytes, boolean done) {
     }
 
+    /**
+     * Derniere mise a jour des donnees (OSM + BAN) depuis le demarrage.
+     * {@code state} : RUNNING, SUCCESS, UP_TO_DATE, PARTIAL ou FAILED ;
+     * {@code finishedAtMillis} null tant que la mise a jour est en cours.
+     */
+    public record DataUpdateInfo(String trigger, String state, long startedAtMillis, Long finishedAtMillis,
+                                 String summary) {
+    }
+
     private final long startedAtMillis = System.currentTimeMillis();
     private final Map<String, ComponentInfo> components = new ConcurrentHashMap<>();
     private final List<String> componentOrder = new CopyOnWriteArrayList<>();
     private final Map<String, DownloadInfo> downloads = new ConcurrentHashMap<>();
     private final List<String> downloadOrder = new CopyOnWriteArrayList<>();
+    private volatile DataUpdateInfo lastDataUpdate;
 
     public void setComponent(String name, ComponentState state, String detail) {
         components.put(name, new ComponentInfo(name, state, detail, System.currentTimeMillis()));
@@ -35,6 +45,14 @@ public class StatusRegistry {
         if (!downloadOrder.contains(name)) {
             downloadOrder.add(name);
         }
+    }
+
+    public void setDataUpdate(DataUpdateInfo info) {
+        this.lastDataUpdate = info;
+    }
+
+    public DataUpdateInfo lastDataUpdate() {
+        return lastDataUpdate;
     }
 
     public List<ComponentInfo> components() {

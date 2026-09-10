@@ -1,5 +1,6 @@
 package bzh.stackbzh.org.data;
 
+import bzh.stackbzh.org.data.DataDownloadService.DownloadResult;
 import bzh.stackbzh.org.geocoding.AddressSearchService;
 import bzh.stackbzh.org.routing.RoutingEngine;
 import bzh.stackbzh.org.status.ComponentState;
@@ -12,6 +13,12 @@ import org.springframework.stereotype.Component;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
+/**
+ * Telechargement INITIAL des fichiers de donnees au demarrage, uniquement si ni le fichier source
+ * ni son cache derive n'existent. Les mises a jour ulterieures (nouvelle version publiee) sont du
+ * ressort de {@link DataUpdateService}, qui recoit le resultat de ces telechargements initiaux
+ * pour les mentionner dans son compte rendu.
+ */
 @Component
 public class DataBootstrap {
 
@@ -48,35 +55,40 @@ public class DataBootstrap {
         this.status = status;
     }
 
-    public void ensureOsm() {
+    /** @return le resultat du telechargement initial, ou null si rien n'a ete telecharge (present, desactive ou echec). */
+    public DownloadResult ensureOsm() {
         if (!autoDownload) {
-            return;
+            return null;
         }
         if (!Files.exists(Path.of(osmFile)) && isEmptyOrMissing(Path.of(graphCache))) {
             log.info("Fichier OSM manquant : telechargement (~5 Go, cela peut etre long)...");
             status.setComponent(RoutingEngine.COMPONENT, ComponentState.DOWNLOADING,
                     "Telechargement du reseau routier (~5 Go)...");
-            safeDownload(osmUrl, Path.of(osmFile));
+            return safeDownload(osmUrl, Path.of(osmFile));
         }
+        return null;
     }
 
-    public void ensureBan() {
+    /** @return le resultat du telechargement initial, ou null si rien n'a ete telecharge (present, desactive ou echec). */
+    public DownloadResult ensureBan() {
         if (!autoDownload) {
-            return;
+            return null;
         }
         if (!Files.exists(Path.of(banFile)) && isEmptyOrMissing(Path.of(indexDir))) {
             log.info("Fichier BAN manquant : telechargement (~900 Mo)...");
             status.setComponent(AddressSearchService.COMPONENT, ComponentState.DOWNLOADING,
                     "Telechargement des adresses BAN (~900 Mo)...");
-            safeDownload(banUrl, Path.of(banFile));
+            return safeDownload(banUrl, Path.of(banFile));
         }
+        return null;
     }
 
-    private void safeDownload(String url, Path target) {
+    private DownloadResult safeDownload(String url, Path target) {
         try {
-            downloadService.download(url, target);
+            return downloadService.download(url, target);
         } catch (Exception e) {
             log.error("Telechargement automatique echoue pour {}.", url, e);
+            return null;
         }
     }
 

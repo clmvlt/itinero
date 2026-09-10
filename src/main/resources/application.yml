@@ -24,6 +24,11 @@ app:
     auto-download: ${APP_AUTO_DOWNLOAD:true}
     # Mise a jour automatique : tous les dimanches a 8h (cron Spring : s m h ...).
     update-cron: ${APP_UPDATE_CRON:0 0 8 * * SUN}
+    # Verifier aussi AU DEMARRAGE (une fois les moteurs charges avec les donnees existantes) si
+    # une version plus recente des donnees est publiee (requete HEAD, comparaison Last-Modified
+    # avec la version locale) et, si oui, la telecharger puis reconstruire graphe/index a chaud.
+    # Deja a jour = rien n'est telecharge. Sans effet si auto-download=false.
+    update-on-start: ${APP_UPDATE_ON_START:true}
   routing:
     # Extrait OSM de la France (https://download.geofabrik.de/europe/france.html)
     osm-file: ${APP_OSM_FILE:data/france-latest.osm.pbf}
@@ -59,7 +64,9 @@ app:
   notifications:
     # Webhook Discord ou sont signalees les erreurs de l'API : 503 (routing/geocoding
     # indisponible), visites ecartees d'une optimisation (UNROUTABLE/TOO_FAR), depot
-    # non rattachable, erreurs internes inattendues (500). Vide = desactive.
+    # non rattachable, erreurs internes inattendues (500). Y sont aussi publies les
+    # comptes rendus de mise a jour des donnees (demarrage + cron : declencheur, machine,
+    # versions, tailles, noeuds/aretes/adresses, durees). Vide = desactive.
     discord-webhook-url: ${APP_DISCORD_WEBHOOK:}
 
 # ---------------------------------------------------------------------------

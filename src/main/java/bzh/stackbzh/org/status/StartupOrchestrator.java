@@ -1,6 +1,8 @@
 package bzh.stackbzh.org.status;
 
 import bzh.stackbzh.org.data.DataBootstrap;
+import bzh.stackbzh.org.data.DataDownloadService.DownloadResult;
+import bzh.stackbzh.org.data.DataUpdateService;
 import bzh.stackbzh.org.geocoding.AddressSearchService;
 import bzh.stackbzh.org.routing.RoutingEngine;
 import org.slf4j.Logger;
@@ -9,6 +11,13 @@ import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
 
+/**
+ * Chargement asynchrone des donnees apres le demarrage de Tomcat, dans l'ordre (RAM maitrisee) :
+ * telechargement initial OSM si absent -> graphe routier -> telechargement initial BAN si absent
+ * -> index d'adresses -> puis {@link DataUpdateService#runOnStartup} (verification qu'une version
+ * plus recente n'est pas publiee, mise a jour + compte rendu Discord le cas echeant). L'API est
+ * donc servie avec les donnees existantes pendant qu'une eventuelle mise a jour se telecharge.
+ */
 @Component
 public class StartupOrchestrator {
 
@@ -17,13 +26,16 @@ public class StartupOrchestrator {
     private final DataBootstrap dataBootstrap;
     private final RoutingEngine routingEngine;
     private final AddressSearchService addressSearchService;
+    private final DataUpdateService dataUpdateService;
     private final StatusRegistry status;
 
     public StartupOrchestrator(DataBootstrap dataBootstrap, RoutingEngine routingEngine,
-                               AddressSearchService addressSearchService, StatusRegistry status) {
+                               AddressSearchService addressSearchService, DataUpdateService dataUpdateService,
+                               StatusRegistry status) {
         this.dataBootstrap = dataBootstrap;
         this.routingEngine = routingEngine;
         this.addressSearchService = addressSearchService;
+        this.dataUpdateService = dataUpdateService;
         this.status = status;
     }
 
@@ -39,20 +51,28 @@ public class StartupOrchestrator {
 
     private void loadAll() {
         log.info("Chargement asynchrone des donnees : debut.");
+        DownloadResult osmInitial = null;
+        DownloadResult banInitial = null;
         try {
-            dataBootstrap.ensureOsm();
+            osmInitial = dataBootstrap.ensureOsm();
             routingEngine.initialize();
         } catch (Exception e) {
             log.error("Initialisation du routing en echec.", e);
             status.setComponent(RoutingEngine.COMPONENT, ComponentState.ERROR, "Echec : " + e.getMessage());
         }
         try {
-            dataBootstrap.ensureBan();
+            banInitial = dataBootstrap.ensureBan();
             addressSearchService.initialize();
         } catch (Exception e) {
             log.error("Initialisation du geocoding en echec.", e);
             status.setComponent(AddressSearchService.COMPONENT, ComponentState.ERROR, "Echec : " + e.getMessage());
         }
         log.info("Chargement asynchrone des donnees : termine.");
+
+        try {
+            dataUpdateService.runOnStartup(osmInitial, banInitial);
+        } catch (Exception e) {
+            log.error("Verification des mises a jour au demarrage en echec.", e);
+        }
     }
 }
