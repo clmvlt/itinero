@@ -77,6 +77,7 @@ CONVENTIONS D'ERREUR (transverses à tous les endpoints) :
 
 DÉMARRAGE / DISPONIBILITÉ :
   Chaque brique se charge de façon asynchrone au démarrage du serveur (téléchargement + construction des index/graphe, potentiellement plusieurs minutes au tout premier lancement). Tant qu'une brique n'est pas prête, ses endpoints renvoient 503. Vérifier la disponibilité via les endpoints status (voir plus bas).
+  Les données sont mises à jour automatiquement (au démarrage si une version plus récente est publiée par la source, et chaque dimanche à 8h Europe/Paris). Pendant la reconstruction du graphe routier (plusieurs dizaines de minutes), /routing et /optimization renvoient 503 ; le geocoding reste disponible pendant la reconstruction de son index. GET /status expose la dernière mise à jour et la prochaine planifiée (objet dataUpdate).
 
 ====================================================================
 TYPES PARTAGÉS
@@ -357,6 +358,13 @@ Réponse 200 (StatusResponse) : état global de l'API.
         // state ∈ WAITING | DOWNLOADING | INITIALIZING | READY | DISABLED | ERROR
     "downloads": [ { "name": string, "downloadedBytes": integer, "totalBytes": integer, "percent": integer, "done": boolean } ],
     "data": [ { "name": string, "path": string, "present": boolean, "sizeBytes": integer } ],
+    "dataUpdate": {                  // mise à jour automatique des données (OSM + BAN)
+      "autoDownload": boolean, "updateOnStart": boolean, "cron": string,
+      "nextScheduledAtMillis": integer | null,
+      "last": null | { "trigger": "Demarrage de l'API" | "Planificateur hebdomadaire",
+                       "state": "RUNNING" | "SUCCESS" | "UP_TO_DATE" | "PARTIAL" | "FAILED",
+                       "startedAtMillis": integer, "finishedAtMillis": integer | null, "summary": string }
+    },
     "links": { "swaggerUi": "/swagger-ui.html", "openApi": "/v3/api-docs" }
   }
 

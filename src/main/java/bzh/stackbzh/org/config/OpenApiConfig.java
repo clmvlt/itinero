@@ -27,9 +27,17 @@ public class OpenApiConfig {
                                 alimente par la Base Adresse Nationale (BAN).
 
                                 ### Donnees
-                                Les fichiers (OSM ~5 Go, BAN ~900 Mo) sont **telecharges automatiquement** au demarrage s'ils manquent, \
-                                et mis a jour **tous les dimanches a 8h** (heure de Paris). Pendant qu'une brique n'a pas ses donnees, \
-                                ses endpoints renvoient **503** (corps `application/problem+json`) ; consulter `GET /status` de chaque brique.
+                                Les fichiers (OSM ~5 Go, BAN ~900 Mo) sont **telecharges automatiquement** au demarrage s'ils manquent. \
+                                Ils sont ensuite **mis a jour automatiquement** par un pipeline commun : **(1) a chaque demarrage**, une fois \
+                                les moteurs charges avec les donnees existantes (l'API reste servie pendant ce temps), si la source publie une \
+                                version plus recente (requete HEAD, comparaison `Last-Modified` avec la version locale) ; **(2) tous les \
+                                dimanches a 8h** (heure de Paris). Une mise a jour re-telecharge le fichier, reconstruit le graphe / l'index \
+                                et bascule a chaud. Pendant la reconstruction du graphe routier, `/routing` et `/optimization` renvoient \
+                                **503** ; le geocoding reste disponible pendant la reconstruction de son index. Chaque execution produit un \
+                                **compte rendu** (declencheur, machine, versions publiees avant/apres, tailles, noeuds/aretes du graphe, \
+                                adresses indexees, durees) publie sur le webhook Discord configure et resume dans `GET /status` \
+                                (objet `dataUpdate`). Pendant qu'une brique n'a pas ses donnees, ses endpoints renvoient **503** \
+                                (corps `application/problem+json`) ; consulter `GET /status` de chaque brique.
 
                                 ### Codes de reponse transverses
                                 - `200` succes
