@@ -13,6 +13,7 @@ import com.graphhopper.routing.ev.Subnetwork;
 import com.graphhopper.routing.util.DefaultSnapFilter;
 import com.graphhopper.routing.util.EdgeFilter;
 import com.graphhopper.routing.weighting.Weighting;
+import com.graphhopper.storage.BaseGraph;
 import com.graphhopper.storage.index.Snap;
 import com.graphhopper.util.CustomModel;
 import com.graphhopper.util.GHUtility;
@@ -132,6 +133,20 @@ public class RoutingEngine {
         return profile;
     }
 
+    /** Taille du graphe charge (noeuds / aretes), ou null si le routing n'est pas pret. Sert au compte rendu de mise a jour. */
+    public GraphStats graphStats() {
+        GraphHopper gh = hopper;
+        if (gh == null) {
+            return null;
+        }
+        try {
+            BaseGraph graph = gh.getBaseGraph();
+            return new GraphStats(graph.getNodes(), graph.getEdges());
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
     public Leg route(double fromLat, double fromLon, double toLat, double toLon) {
         GraphHopper gh = ensureReady();
         GHRequest req = new GHRequest(fromLat, fromLon, toLat, toLon).setProfile(profile);
@@ -226,6 +241,9 @@ public class RoutingEngine {
     }
 
     public record Leg(double distanceMeters, long durationSeconds, double[][] geometry) {
+    }
+
+    public record GraphStats(int nodes, int edges) {
     }
 
     public enum PointStatus {
