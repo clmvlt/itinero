@@ -1,19 +1,26 @@
 package bzh.stackbzh.org.optimization;
 
+import ai.timefold.solver.core.api.solver.SolverConfigOverride;
 import ai.timefold.solver.core.api.solver.SolverJob;
+import ai.timefold.solver.core.api.solver.SolverJobBuilder;
 import ai.timefold.solver.core.api.solver.SolverManager;
+import bzh.stackbzh.org.notification.DiscordNotifier;
 import bzh.stackbzh.org.optimization.domain.Location;
 import bzh.stackbzh.org.optimization.domain.Vehicle;
 import bzh.stackbzh.org.optimization.domain.VehicleRoutePlan;
 import bzh.stackbzh.org.optimization.domain.Visit;
-import bzh.stackbzh.org.notification.DiscordNotifier;
+import bzh.stackbzh.org.optimization.dto.DispatchRequest;
+import bzh.stackbzh.org.optimization.dto.DispatchResponse;
 import bzh.stackbzh.org.optimization.dto.OptimizeRequest;
 import bzh.stackbzh.org.optimization.dto.OptimizeResponse;
 import bzh.stackbzh.org.optimization.dto.VisitDto;
 import bzh.stackbzh.org.routing.GeometryEncoder;
 import bzh.stackbzh.org.routing.MatrixService;
 import bzh.stackbzh.org.routing.RoutingEngine;
+import bzh.stackbzh.org.routing.dto.Coordinate;
 import bzh.stackbzh.org.routing.dto.GeometryFormat;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -28,9 +35,22 @@ import java.util.UUID;
 import java.util.concurrent.ExecutionException;
 import java.util.stream.IntStream;
 
+/**
+ * Deux modes partagent le meme pipeline (verification des points, matrice de temps, solveur, reponse enrichie) :
+ * <ul>
+ *   <li>{@link #optimize(OptimizeRequest)} : ordre de passage optimal, objectif = temps total minimal
+ *   (avec plusieurs vehicules sans capacite, tout finit sur un seul vehicule) ; temps de resolution =
+ *   {@code timefold.solver.termination.spent-limit}.</li>
+ *   <li>{@link #dispatch(DispatchRequest)} : repartition de N points en K tournees EQUILIBREES en duree
+ *   (vehicules {@code balanceDuration = true} -> contrainte souple {@code balanceTourDurations}) ; temps de
+ *   resolution choisi par requete ({@code maxSolvingSeconds}, borne par la config), applique via
+ *   {@link SolverConfigOverride} sans toucher a la configuration globale du {@link SolverManager}.</li>
+ * </ul>
+ */
 @Service
 public class OptimizationService {
 
+    private static final Logger log = LoggerFactory.getLogger(OptimizationService.class);
     private static final int UNLIMITED_CAPACITY = Integer.MAX_VALUE / 2;
 
     private final MatrixService matrixService;
@@ -39,45 +59,122 @@ public class OptimizationService {
     private final DiscordNotifier notifier;
     /** Attente max (s) par defaut devant une fenetre horaire ; <= 0 = illimitee. */
     private final int defaultMaxWaitingSeconds;
+    /** /dispatch : temps de resolution (s) par defaut et plafond. */
+    private final int dispatchDefaultSolvingSeconds;
+    private final int dispatchMaxSolvingSeconds;
 
     public OptimizationService(MatrixService matrixService,
                                RoutingEngine routingEngine,
                                SolverManager<VehicleRoutePlan, UUID> solverManager,
                                DiscordNotifier notifier,
-                               @Value("${app.optimization.max-waiting-seconds:3600}") int defaultMaxWaitingSeconds) {
+                               @Value("${app.optimization.max-waiting-seconds:3600}") int defaultMaxWaitingSeconds,
+                               @Value("${app.optimization.dispatch.default-solving-seconds:10}") int dispatchDefaultSolvingSeconds,
+                               @Value("${app.optimization.dispatch.max-solving-seconds:60}") int dispatchMaxSolvingSeconds) {
         this.matrixService = matrixService;
         this.routingEngine = routingEngine;
         this.solverManager = solverManager;
         this.notifier = notifier;
         this.defaultMaxWaitingSeconds = defaultMaxWaitingSeconds;
+        this.dispatchDefaultSolvingSeconds = Math.max(1, dispatchDefaultSolvingSeconds);
+        this.dispatchMaxSolvingSeconds = Math.max(this.dispatchDefaultSolvingSeconds, dispatchMaxSolvingSeconds);
     }
 
+    // ------------------------------------------------------------------ /optimize
+
     public OptimizeResponse optimize(OptimizeRequest request) {
-        RoutingEngine.PointCheck depotCheck =
-                routingEngine.checkPoint(request.depot().lat(), request.depot().lon());
+        Prepared p = prepare(request.depot(), request.visits(), request.departureTime(), request.maxWaitingSeconds());
+        if (p.visits().isEmpty()) {
+            return new OptimizeResponse("n/a", true, 0, p.maxWaiting(), 0, 0, new ArrayList<>(), p.skipped());
+        }
+        VehicleRoutePlan problem = buildProblem(p, request.resolvedVehicleCount(), request.vehicleCapacity(), false);
+        VehicleRoutePlan solution = solve(problem, null);
+        Routes r = buildRoutes(solution, p, request.resolvedGeometryFormat());
+        return new OptimizeResponse(r.score(), r.feasible(), r.violations(), p.maxWaiting(),
+                r.totalDriving(), r.totalDistance(), r.routes(), p.skipped());
+    }
+
+    // ------------------------------------------------------------------ /dispatch
+
+    public DispatchResponse dispatch(DispatchRequest request) {
+        int solvingSeconds = resolveSolvingSeconds(request.maxSolvingSeconds());
+        int vehicleCount = request.vehicleCount();
+        Prepared p = prepare(request.depot(), request.visits(), request.departureTime(), request.maxWaitingSeconds());
+        if (p.visits().isEmpty()) {
+            return new DispatchResponse("n/a", true, 0, p.maxWaiting(), solvingSeconds, vehicleCount, 0, 0, 0, 0,
+                    new DispatchResponse.BalanceDto(0, 0, 0, 0), new ArrayList<>(), p.skipped());
+        }
+        VehicleRoutePlan problem = buildProblem(p, vehicleCount, request.vehicleCapacity(), true);
+        long t0 = System.currentTimeMillis();
+        VehicleRoutePlan solution = solve(problem, Duration.ofSeconds(solvingSeconds));
+        log.info("Dispatch : {} visites reparties en {} tournees en {} ms (budget {} s), score {}",
+                p.visits().size(), vehicleCount, System.currentTimeMillis() - t0, solvingSeconds, solution.getScore());
+        Routes r = buildRoutes(solution, p, request.resolvedGeometryFormat());
+
+        long longest = 0;
+        long shortest = Long.MAX_VALUE;
+        long sumUsed = 0;
+        long totalDuration = 0;
+        int used = 0;
+        for (OptimizeResponse.RouteDto route : r.routes()) {
+            totalDuration += route.durationSeconds();
+            if (route.stops().isEmpty()) {
+                continue;
+            }
+            used++;
+            sumUsed += route.durationSeconds();
+            longest = Math.max(longest, route.durationSeconds());
+            shortest = Math.min(shortest, route.durationSeconds());
+        }
+        DispatchResponse.BalanceDto balance = used == 0
+                ? new DispatchResponse.BalanceDto(0, 0, 0, 0)
+                : new DispatchResponse.BalanceDto(longest, shortest, Math.round((double) sumUsed / used), longest - shortest);
+
+        return new DispatchResponse(r.score(), r.feasible(), r.violations(), p.maxWaiting(), solvingSeconds,
+                vehicleCount, used, r.totalDriving(), r.totalDistance(), totalDuration, balance, r.routes(), p.skipped());
+    }
+
+    /** Budget de resolution effectif : requete sinon defaut serveur, plafonne par la config. */
+    int resolveSolvingSeconds(Integer requested) {
+        int v = requested != null ? requested : dispatchDefaultSolvingSeconds;
+        return Math.max(1, Math.min(v, dispatchMaxSolvingSeconds));
+    }
+
+    // ------------------------------------------------------------------ pipeline commun
+
+    /** Donnees preparees avant resolution : depot, visites routables, visites ecartees, origine des temps. */
+    private record Prepared(Location depot, List<Visit> visits, Map<String, VisitDto> dtoById,
+                            List<OptimizeResponse.SkippedVisitDto> skipped,
+                            LocalDateTime departureTime, Integer maxWaiting) {
+    }
+
+    /** Sortie commune de la construction des tournees. */
+    private record Routes(String score, boolean feasible, int violations, long totalDriving, double totalDistance,
+                          List<OptimizeResponse.RouteDto> routes) {
+    }
+
+    private Prepared prepare(Coordinate depotCoord, List<VisitDto> visitDtos,
+                             LocalDateTime requestedDeparture, Integer requestedMaxWaiting) {
+        RoutingEngine.PointCheck depotCheck = routingEngine.checkPoint(depotCoord.lat(), depotCoord.lon());
         if (depotCheck.status() != RoutingEngine.PointStatus.OK) {
             String message = depotMessage(depotCheck);
             notifier.notifyError("Optimisation refusee : depot non rattachable (400)",
-                    message + "\nDepot : (" + request.depot().lat() + ", " + request.depot().lon() + ")");
+                    message + "\nDepot : (" + depotCoord.lat() + ", " + depotCoord.lon() + ")");
             throw new IllegalArgumentException(message);
         }
 
         // Origine des temps de la tournee : heure de depart estimee (ou maintenant). Toutes les
         // fenetres horaires sont converties en offsets (secondes) par rapport a cet instant.
-        LocalDateTime departureTime = resolveDepartureTime(request);
+        LocalDateTime departureTime = resolveDepartureTime(requestedDeparture);
         // Attente max toleree devant une fenetre : requete, sinon defaut serveur ; 0 = desactive (null).
-        Integer maxWaiting = resolveMaxWaitingSeconds(request);
+        Integer maxWaiting = resolveMaxWaitingSeconds(requestedMaxWaiting);
         Long maxWaitingLong = maxWaiting == null ? null : maxWaiting.longValue();
 
-        Location depot = new Location("depot", request.depot().lat(), request.depot().lon());
-        List<Location> locations = new ArrayList<>();
-        locations.add(depot);
-
+        Location depot = new Location("depot", depotCoord.lat(), depotCoord.lon());
         List<Visit> visits = new ArrayList<>();
         Map<String, VisitDto> dtoById = new HashMap<>();
         List<OptimizeResponse.SkippedVisitDto> skipped = new ArrayList<>();
         int idx = 0;
-        for (VisitDto dto : request.visits()) {
+        for (VisitDto dto : visitDtos) {
             String id = dto.id() != null ? dto.id() : "v" + idx;
             idx++;
             RoutingEngine.PointCheck check = routingEngine.checkPoint(dto.lat(), dto.lon());
@@ -86,7 +183,6 @@ public class OptimizationService {
                 continue;
             }
             Location loc = new Location("loc-" + id, dto.lat(), dto.lon());
-            locations.add(loc);
             dtoById.put(id, dto);
             visits.add(new Visit(id, dto.name(), loc, dto.resolvedDemand(), dto.resolvedServiceDurationSeconds(),
                     offsetSeconds(departureTime, dto.timeWindowStart()),
@@ -98,11 +194,16 @@ public class OptimizationService {
             notifier.notifyError("Optimisation : " + skipped.size() + " visite(s) ecartee(s)",
                     skippedDetails(skipped));
         }
+        return new Prepared(depot, visits, dtoById, skipped, departureTime, maxWaiting);
+    }
 
-        if (visits.isEmpty()) {
-            return new OptimizeResponse("n/a", true, 0, maxWaiting, 0, 0, new ArrayList<>(), skipped);
+    /** Calcule la matrice des temps (depot + visites), l'injecte dans les locations et cree les vehicules. */
+    private VehicleRoutePlan buildProblem(Prepared p, int vehicleCount, Integer vehicleCapacity, boolean balance) {
+        List<Location> locations = new ArrayList<>();
+        locations.add(p.depot());
+        for (Visit visit : p.visits()) {
+            locations.add(visit.getLocation());
         }
-
         List<double[]> coords = locations.stream()
                 .map(l -> new double[]{l.getLat(), l.getLon()})
                 .toList();
@@ -115,27 +216,23 @@ public class OptimizationService {
             locations.get(i).setDrivingTimeSeconds(times);
         }
 
-        int capacity = request.vehicleCapacity() != null ? request.vehicleCapacity() : UNLIMITED_CAPACITY;
+        int capacity = vehicleCapacity != null ? vehicleCapacity : UNLIMITED_CAPACITY;
         List<Vehicle> vehicles = new ArrayList<>();
-        for (int v = 0; v < request.resolvedVehicleCount(); v++) {
-            vehicles.add(new Vehicle("vehicle-" + v, capacity, depot, 0L));
+        for (int v = 0; v < Math.max(1, vehicleCount); v++) {
+            vehicles.add(new Vehicle("vehicle-" + v, capacity, p.depot(), 0L, balance));
         }
-
-        VehicleRoutePlan problem = new VehicleRoutePlan(vehicles, visits);
-        VehicleRoutePlan solution = solve(problem);
-
-        return toResponse(solution, request, departureTime, maxWaiting, depot, dtoById, skipped);
+        return new VehicleRoutePlan(vehicles, p.visits());
     }
 
     /** Limite d'attente effective : valeur de la requete, sinon defaut serveur ; null si desactivee (<= 0). */
-    private Integer resolveMaxWaitingSeconds(OptimizeRequest request) {
-        int v = request.maxWaitingSeconds() != null ? request.maxWaitingSeconds() : defaultMaxWaitingSeconds;
+    private Integer resolveMaxWaitingSeconds(Integer requested) {
+        int v = requested != null ? requested : defaultMaxWaitingSeconds;
         return v <= 0 ? null : v;
     }
 
     /** Heure de depart de la tournee, tronquee a la seconde (les offsets sont en secondes entieres). */
-    private static LocalDateTime resolveDepartureTime(OptimizeRequest request) {
-        LocalDateTime t = request.departureTime() != null ? request.departureTime() : LocalDateTime.now();
+    private static LocalDateTime resolveDepartureTime(LocalDateTime requested) {
+        LocalDateTime t = requested != null ? requested : LocalDateTime.now();
         return t.truncatedTo(ChronoUnit.SECONDS);
     }
 
@@ -176,9 +273,20 @@ public class OptimizationService {
         return new OptimizeResponse.SkippedVisitDto(id, dto.name(), dto.lat(), dto.lon(), reason, distance);
     }
 
-    private VehicleRoutePlan solve(VehicleRoutePlan problem) {
+    /**
+     * Resout le probleme. {@code spentLimit} null = terminaison de la configuration globale
+     * ({@code timefold.solver.termination.spent-limit}) ; sinon la limite est surchargee pour CE job uniquement.
+     */
+    private VehicleRoutePlan solve(VehicleRoutePlan problem, Duration spentLimit) {
         UUID problemId = UUID.randomUUID();
-        SolverJob<VehicleRoutePlan, UUID> job = solverManager.solve(problemId, problem);
+        SolverJobBuilder<VehicleRoutePlan, UUID> builder = solverManager.solveBuilder()
+                .withProblemId(problemId)
+                .withProblem(problem);
+        if (spentLimit != null) {
+            builder.withConfigOverride(new SolverConfigOverride<VehicleRoutePlan>()
+                    .withTerminationSpentLimit(spentLimit));
+        }
+        SolverJob<VehicleRoutePlan, UUID> job = builder.run();
         try {
             return job.getFinalBestSolution();
         } catch (InterruptedException e) {
@@ -189,11 +297,11 @@ public class OptimizationService {
         }
     }
 
-    private OptimizeResponse toResponse(VehicleRoutePlan solution, OptimizeRequest request,
-                                        LocalDateTime departureTime, Integer maxWaiting, Location depot,
-                                        Map<String, VisitDto> dtoById,
-                                        List<OptimizeResponse.SkippedVisitDto> skipped) {
-        GeometryFormat geometryFormat = request.resolvedGeometryFormat();
+    private Routes buildRoutes(VehicleRoutePlan solution, Prepared p, GeometryFormat geometryFormat) {
+        LocalDateTime departureTime = p.departureTime();
+        Integer maxWaiting = p.maxWaiting();
+        Location depot = p.depot();
+        Map<String, VisitDto> dtoById = p.dtoById();
 
         List<OptimizeResponse.RouteDto> routes = new ArrayList<>();
         int violations = 0;
@@ -277,17 +385,16 @@ public class OptimizationService {
 
             routes.add(new OptimizeResponse.RouteDto(
                     vehicle.getId(), departureTime, returnTime,
-                    cumulativeDriving, serviceTotal, waitingTotal, cumulativeDistance,
-                    vehicle.getTotalDemand(), stops, returnLeg,
+                    cumulativeDriving, serviceTotal, waitingTotal,
+                    cumulativeDriving + serviceTotal + waitingTotal,
+                    cumulativeDistance, vehicle.getTotalDemand(), stops, returnLeg,
                     routePoints, routePolyline));
         }
 
         boolean hardOk = solution.getScore() != null && solution.getScore().hardScore() == 0;
         boolean feasible = hardOk && violations == 0;
-
         String score = solution.getScore() != null ? solution.getScore().toString() : "n/a";
-        return new OptimizeResponse(score, feasible, violations, maxWaiting, grandTotalDriving, grandTotalDistance,
-                routes, skipped);
+        return new Routes(score, feasible, violations, grandTotalDriving, grandTotalDistance, routes);
     }
 
     private RoutingEngine.Leg[] routeVehicleLegs(List<Visit> visits, Location depot) {

@@ -1,5 +1,7 @@
 package bzh.stackbzh.org.optimization;
 
+import bzh.stackbzh.org.optimization.dto.DispatchRequest;
+import bzh.stackbzh.org.optimization.dto.DispatchResponse;
 import bzh.stackbzh.org.optimization.dto.OptimizeRequest;
 import bzh.stackbzh.org.optimization.dto.OptimizeResponse;
 import io.swagger.v3.oas.annotations.Operation;
@@ -16,11 +18,15 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @RequestMapping("/optimization")
 @Tag(name = "Optimisation", description = """
-        Optimisation de tournees (VRP/TSP, avec fenetres horaires = VRPTW) via Timefold. Determine \
-        l'ordre de passage optimal des points (et leur repartition entre vehicules) en minimisant le \
-        temps de conduite (+ temps d'attente), sous contrainte de capacite et de fenetres horaires de \
-        livraison. S'appuie sur le moteur de routing pour la matrice de temps : si le routing est \
-        indisponible, renvoie 503.""")
+        Optimisation de tournees via Timefold, avec fenetres horaires (VRPTW). Deux operations :
+        - **`/optimize`** : ordre de passage optimal d'une liste de points (TSP/VRP) en minimisant le temps \
+        total (conduite + attente). Avec plusieurs vehicules sans capacite, le solveur tend a n'en utiliser \
+        qu'un seul.
+        - **`/dispatch`** : repartition AUTOMATIQUE de N points (une centaine ou plus) en K tournees \
+        EQUILIBREES en duree, chaque tournee couvrant une zone geographique coherente et etant ordonnee. \
+        Ne repose pas sur la capacite ; temps de resolution choisi par requete.
+        Les deux s'appuient sur le moteur de routing pour la matrice de temps reels : si le routing est \
+        indisponible, elles renvoient 503.""")
 public class OptimizationController {
 
     private final OptimizationService service;
@@ -86,7 +92,8 @@ public class OptimizationController {
                     EST l'ordre de passage optimal.
 
                     Note : avec capacite illimitee et plusieurs vehicules, le solveur tend a n'en utiliser qu'un \
-                    (chaque vehicule ajoute un aller-retour au depot), sauf si les fenetres horaires l'imposent.
+                    (chaque vehicule ajoute un aller-retour au depot), sauf si les fenetres horaires l'imposent. \
+                    Pour repartir N points en K tournees equilibrees en duree, utiliser **`/optimization/dispatch`**.
 
                     La reponse est enrichie pour l'affichage : pour chaque segment (point precedent -> point), \
                     distance (m), duree (s) et **geometrie** ; pour chaque arret, distance/temps cumules, \
@@ -121,5 +128,92 @@ public class OptimizationController {
     })
     public OptimizeResponse optimize(@Valid @RequestBody OptimizeRequest request) {
         return service.optimize(request);
+    }
+
+    @PostMapping("/dispatch")
+    @Operation(summary = "Repartir N points en K tournees equilibrees en duree (repartition automatique)",
+            description = """
+                    Recoit un depot, un NOMBRE de tournees `vehicleCount` (ex : 5) et une liste de points (ex : 100) \
+                    et repartit elle-meme les points entre les tournees, puis ordonne chaque tournee. Aucune \
+                    capacite ni aucun `demand` n'est necessaire : la repartition se fait sur les DUREES.
+
+                    **Difference avec `/optimize`** : `/optimize` minimise le temps total et, avec plusieurs vehicules \
+                    sans capacite, finit mathematiquement par tout mettre sur un seul vehicule (chaque vehicule \
+                    supplementaire ajoute un aller-retour au depot). `/dispatch` change l'objectif : il minimise la \
+                    **somme des CARRES des durees de tournee** (duree = conduite + service + attentes). Cette somme vaut \
+                    (temps total)^2 / K + K x variance : la minimiser reduit a la fois le temps global ET l'ecart entre \
+                    vehicules, sans reglage. Resultat : les K vehicules sont utilises, chacun couvre une zone \
+                    geographique coherente (les points proches finissent dans la meme tournee) et les durees sont \
+                    proches sans etre strictement egales (un desequilibre est accepte s'il fait gagner du temps \
+                    globalement, ou si les fenetres horaires / la geographie l'imposent). Avec `vehicleCount = 1`, \
+                    l'optimum est le meme que `/optimize`.
+
+                    Deroulement interne :
+                    1. verification du depot (non rattachable -> 400) et de chaque point (non rattachable -> ecarte \
+                    dans `skippedVisits`, cf. plus bas) ; fenetres horaires converties en offsets par rapport a \
+                    `departureTime` ;
+                    2. matrice des temps reels entre tous les points (routing local GraphHopper, (N+1)^2 routages : \
+                    ~10 000 pour 100 points, quelques secondes) ;
+                    3. resolution Timefold pendant **`maxSolvingSeconds`** (defaut serveur 10 s, plafond 60 s) : \
+                    contraintes DURES = arrivee avant `timeWindowEnd`, attente <= `maxWaitingSeconds`, capacite si \
+                    `vehicleCapacity` est fourni ; contrainte SOUPLE dominante = somme des carres des durees de tournee \
+                    (+ conduite et attente en departage) ;
+                    4. reponse : une tournee ordonnee par vehicule (memes champs que `/optimize` : segments, cumuls, \
+                    heures d'arrivee/debut de service/depart, statut de fenetre, geometrie complete) + indicateurs \
+                    d'equilibre (`balance`).
+
+                    **Temps de reponse** : la requete HTTP dure au moins `maxSolvingSeconds` + le calcul de la matrice. \
+                    C'est voulu : plus le budget est long, meilleure est la repartition (100 points / 5 tournees : \
+                    ~10 s correct, 20-30 s tres bon). Prevoir un timeout client d'au moins 90 s. Une valeur \
+                    superieure au plafond serveur est ramenee silencieusement au plafond ; le budget reellement \
+                    applique est renvoye dans `solvingTimeSeconds`. Chaque resolution occupe un thread du solveur \
+                    pendant toute sa duree : les appels simultanes au-dela du parallelisme configure sont mis en \
+                    file d'attente.
+
+                    **Fenetres horaires, attente max, heure de depart** : memes regles et memes champs que \
+                    `/optimize` (`departureTime` = origine des temps, `timeWindowStart` -> attente, `timeWindowEnd` \
+                    -> heure limite d'arrivee (dure), `maxWaitingSeconds` -> attente toleree). Une fenetre intenable \
+                    n'est pas un 400 : la meilleure repartition est renvoyee avec `feasible=false`, \
+                    `timeWindowViolations` > 0 et `stops[].timeWindowStatus` = `LATE` ou `WAITING_TOO_LONG`. \
+                    Toutes les tournees partent du depot a `departureTime`.
+
+                    **Lecture de la reponse** : `routes` contient exactement `vehicleCount` entrees (`vehicle-0` .. \
+                    `vehicle-<K-1>`), chacune deja ordonnee (`stops[]` = ordre de passage) avec sa duree totale \
+                    `durationSeconds`. `usedVehicleCount` < `vehicleCount` seulement s'il y a moins de points valides \
+                    que de vehicules (tournees vides). `balance` donne la tournee la plus longue / la plus courte, la \
+                    moyenne et l'ecart entre tournees utilisees. `totalDurationSeconds` = somme des durees. Le champ \
+                    `score` n'est comparable qu'entre deux resolutions du meme probleme.
+
+                    **Capacite (facultative)** : si `vehicleCapacity` est fourni, la somme des `demand` d'une tournee \
+                    ne peut pas le depasser (contrainte dure, `feasible=false` si intenable). Sans `vehicleCapacity`, \
+                    `demand` est ignore.
+
+                    **Points non rattachables** : meme tolerance que `/optimize`. Une visite en mer / hors zone / \
+                    a plus de `app.routing.max-snap-distance-meters` de toute route est ECARTEE et listee dans \
+                    `skippedVisits[]` (`reason` = `UNROUTABLE` ou `TOO_FAR`) ; la repartition se fait sur les points \
+                    restants. Toutes ecartees -> 200 avec `routes` vide et `usedVehicleCount = 0`. Depot non \
+                    rattachable -> 400.
+
+                    **Geometrie** : `geometryFormat` = `POINTS` (defaut), `POLYLINE` (recommande : une centaine de \
+                    segments) ou `NONE`. Par tournee, `geometry`/`geometryPolyline` = trace COMPLETE depot -> arrets \
+                    -> depot (polyline remplie sauf en NONE) ; par arret, `legFromPrevious` = segment individuel.
+
+                    Exemple minimal : `{ "depot": {"lat": 48.1173, "lon": -1.6778}, "vehicleCount": 5, \
+                    "maxSolvingSeconds": 20, "geometryFormat": "POLYLINE", "visits": [ {"id": "A", "lat": 48.12, \
+                    "lon": -1.70}, ... 100 points ... ] }`.""")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Repartition calculee : `routes` (une tournee ordonnee "
+                    + "par vehicule, `vehicleCount` entrees), `balance` (equilibre des durees), `solvingTimeSeconds` "
+                    + "(budget applique). Verifier `feasible` (false = fenetre horaire, attente max ou capacite "
+                    + "intenable, details dans `stops[].timeWindowStatus`) et `skippedVisits` (points ecartes)."),
+            @ApiResponse(responseCode = "400", description = "Depot manquant ou non rattachable au reseau routier, "
+                    + "`vehicleCount` absent ou < 1, liste de visites vide, coordonnee manquante, fenetre horaire "
+                    + "invalide (`timeWindowStart` > `timeWindowEnd`), `maxWaitingSeconds` negatif ou "
+                    + "`maxSolvingSeconds` < 1", content = @Content),
+            @ApiResponse(responseCode = "503", description = "Routing indisponible (matrice non calculable : donnees "
+                    + "absentes ou graphe en cours de (re)construction)", content = @Content)
+    })
+    public DispatchResponse dispatch(@Valid @RequestBody DispatchRequest request) {
+        return service.dispatch(request);
     }
 }

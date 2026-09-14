@@ -75,6 +75,11 @@ public record OptimizeResponse(
             @Schema(description = "Temps d'attente total de la tournee, en secondes : somme des `waitingSeconds` des "
                     + "arrets (vehicule arrive avant l'ouverture d'une fenetre horaire). 0 sans fenetres.", example = "600")
             long waitingTimeSeconds,
+            @Schema(description = "Duree TOTALE de la tournee, en secondes, du depart du depot au retour : "
+                    + "`drivingTimeSeconds` + `serviceTimeSeconds` + `waitingTimeSeconds` (= `returnTime` - "
+                    + "`departureTime`). C'est la duree comparee entre vehicules par `/optimization/dispatch`. "
+                    + "0 pour un vehicule sans arret.", example = "14550")
+            long durationSeconds,
             @Schema(description = "Distance totale de la tournee, en metres.", example = "184300.0")
             double distanceMeters,
             @Schema(description = "Somme des demandes des visites de la tournee.", example = "2")

@@ -48,6 +48,15 @@ app:
     # le solveur reordonne pour l'eviter, sinon feasible=false + timeWindowStatus=WAITING_TOO_LONG).
     # Surchargeable par requete (`maxWaitingSeconds`). 0 = desactive (attente illimitee).
     max-waiting-seconds: ${APP_MAX_WAITING_SECONDS:3600}
+    # POST /optimization/dispatch (repartition de N points en K tournees equilibrees) : temps de
+    # resolution alloue au solveur, en secondes. Plus il est long, meilleure est la repartition
+    # (100 points / 5 tournees : ~10 s correct, ~20-30 s tres bon). `default` s'applique quand la
+    # requete ne fournit pas `maxSolvingSeconds` ; `max` plafonne la valeur demandee (protege le serveur :
+    # un solveur occupe un thread pendant toute la duree). Independant de timefold.solver.termination
+    # (qui reste la limite de /optimization/optimize).
+    dispatch:
+      default-solving-seconds: ${APP_DISPATCH_SOLVING_SECONDS:10}
+      max-solving-seconds: ${APP_DISPATCH_MAX_SOLVING_SECONDS:60}
   geocoding:
     # Fichier BAN (https://adresse.data.gouv.fr/data/ban/adresses/latest/csv)
     # adresses-france.csv.gz (semicolon-separated, gzip)
