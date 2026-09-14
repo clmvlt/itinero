@@ -15,14 +15,17 @@ public class OpenApiConfig {
         return new OpenAPI()
                 .info(new Info()
                         .title("spring-org API")
-                        .version("0.1.0")
+                        .version("0.2.0")
                         .description("""
                                 API **100 % locale** (aucune dependance a une API externe a l'execution) reunissant trois briques :
 
                                 1. **Routing** (`/routing`) — calcul d'itineraire et de matrices de temps via GraphHopper embarque, \
                                 a partir d'un extrait OpenStreetMap de la France.
-                                2. **Optimisation** (`/optimization`) — resolution de tournees (VRP/TSP) via Timefold : \
-                                ordre de passage optimal de N points, sous contrainte de capacite, en minimisant le temps de conduite.
+                                2. **Optimisation** (`/optimization`) — resolution de tournees via Timefold : \
+                                `/optimize` = ordre de passage optimal de N points (TSP/VRP/VRPTW, minimise le temps total) ; \
+                                `/dispatch` = **repartition automatique** de N points (une centaine ou plus) en K tournees \
+                                **equilibrees en duree** (zones geographiques coherentes, chaque vehicule utilise), sans \
+                                s'appuyer sur la capacite ; temps de resolution choisi par requete.
                                 3. **Geocoding** (`/geocoding`) — recherche / autocompletion d'adresse via un index Lucene \
                                 alimente par la Base Adresse Nationale (BAN).
 

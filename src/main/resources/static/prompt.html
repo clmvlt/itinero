@@ -61,7 +61,8 @@ CONTEXTE GÉNÉRAL
 ====================================================================
 spring-org est une API REST 100 % locale (aucune dépendance externe à l'exécution) réunissant trois briques indépendantes :
   1. Routing      — itinéraires + matrices de temps (moteur GraphHopper, extrait OpenStreetMap France).
-  2. Optimisation — tournées VRP/TSP : ordre de passage optimal de N points (moteur Timefold).
+  2. Optimisation — tournées VRP/TSP (moteur Timefold) : /optimize = ordre de passage optimal de N points ;
+     /dispatch = répartition automatique de N points (ex : 100) en K tournées (ex : 5) équilibrées en durée.
   3. Geocoding    — recherche / autocomplétion d'adresse (index Lucene sur la Base Adresse Nationale BAN).
 
 URL de base (production) : https://ors.stack.bzh
@@ -205,7 +206,8 @@ CAS D'USAGE :
     L'ordre optimal de passage = routes[0].stops[].visitId dans l'ordre du tableau.
   • N véhicules + vehicleCapacity + demand → répartition capacitaire (CVRP).
   Note : avec capacité illimitée et plusieurs véhicules, le solveur tend à n'en utiliser qu'un seul
-  (chaque véhicule ajoute un aller-retour au dépôt).
+  (chaque véhicule ajoute un aller-retour au dépôt). Pour répartir N points en K tournées équilibrées,
+  utiliser POST /optimization/dispatch (ci-dessous).
 
 TOLÉRANCE AUX POINTS NON RATTACHABLES (important) :
   Avant l'optimisation, chaque point est testé contre le réseau routier. Une VISITE non rattachable
@@ -236,6 +238,7 @@ RouteDto (tournée d'un véhicule, dépôt -> arrêts -> dépôt) :
     "drivingTimeSeconds": integer,
     "serviceTimeSeconds": integer,
     "waitingTimeSeconds": integer,      // somme des attentes aux fenêtres horaires (0 sans fenêtres)
+    "durationSeconds": integer,         // durée TOTALE de la tournée = conduite + service + attente (= returnTime - departureTime) ; 0 si vide
     "distanceMeters": number,
     "totalDemand": integer,             // somme des demandes des visites de la tournée
     "stops": [ StopDto, ... ],          // arrêts dans l'ordre OPTIMAL de passage
@@ -287,6 +290,87 @@ SkippedVisitDto (visite écartée) :
 
 Codes : 200 (vérifier feasible + skippedVisits) ; 400 dépôt manquant/non rattachable, visits vide,
 timeWindowStart > timeWindowEnd ou maxWaitingSeconds négatif ; 503 routing indisponible.
+
+--- POST /optimization/dispatch ---
+But : RÉPARTIR automatiquement une liste de points (typiquement 20 à 300, ex : 100) en K tournées
+(vehicleCount, ex : 5) ÉQUILIBRÉES EN DURÉE, puis ordonner chaque tournée. L'API décide elle-même quel point
+va dans quelle tournée : aucune capacité ni demand n'est nécessaire.
+Différence avec /optimize : /optimize minimise le temps TOTAL et, avec plusieurs véhicules sans capacité, finit
+par tout mettre sur UN SEUL véhicule (chaque véhicule ajoute un aller-retour au dépôt). /dispatch minimise la
+SOMME DES CARRÉS des durées de tournée (durée = conduite + service + attente) : cela réduit à la fois le temps
+global ET l'écart entre véhicules → tous les véhicules sont utilisés, chaque tournée couvre une zone géographique
+cohérente (les points proches finissent dans la même tournée), les durées sont proches sans être strictement
+égales (un déséquilibre est accepté s'il fait gagner du temps globalement, ou si les fenêtres horaires / la
+géographie l'imposent). vehicleCount=1 donne le même optimum que /optimize.
+Dépend du routing (matrice (N+1)² via GraphHopper : ~10 000 routages pour 100 points) : si routing KO → 503.
+
+Corps (DispatchRequest) :
+  {
+    "depot": Coordinate (REQUIS),          // départ ET arrivée commun à toutes les tournées
+    "vehicleCount": integer (REQUIS, ≥ 1), // NOMBRE de tournées à produire ; absent ou < 1 → 400
+    "vehicleCapacity": integer | null,     // FACULTATIF (inutile pour la répartition). Si fourni : contrainte DURE, la somme des
+                                           // demand d'une tournée ne peut pas le dépasser. null = illimité (demand ignoré).
+    "departureTime": LocalDateTime | null, // heure de départ ESTIMÉE du dépôt, commune à TOUTES les tournées ; défaut = heure
+                                           // courante du serveur. Origine des heures de la réponse et référence des fenêtres
+                                           // horaires → à renseigner dès qu'une visite a une fenêtre.
+    "maxWaitingSeconds": integer | null,   // attente MAX tolérée devant une fenêtre pas encore ouverte (s). null = défaut serveur
+                                           // (3600) ; 0 = illimitée. Même sémantique que /optimize.
+    "maxSolvingSeconds": integer | null,   // temps de RÉSOLUTION alloué au solveur (s), ≥ 1. null = défaut serveur (10 s).
+                                           // Plafonné SILENCIEUSEMENT au maximum serveur (60 s) ; la valeur appliquée est renvoyée
+                                           // dans solvingTimeSeconds. La requête HTTP dure AU MOINS ce temps + le calcul de la
+                                           // matrice → prévoir un timeout client ≥ 90 s. 100 points / 5 tournées : 10 s correct,
+                                           // 20-30 s très bon.
+    "geometryFormat": "POINTS"|"POLYLINE"|"NONE",  // défaut POINTS ; POLYLINE recommandé (≈ 100 segments à tracer)
+    "visits": [ VisitDto, ... ] (REQUIS, non vide)   // MÊME VisitDto que /optimize (id, name, lat, lon, demand,
+                                                     // serviceDurationSeconds, timeWindowStart, timeWindowEnd)
+  }
+  Pas de champ includeGeometry sur cette route (utiliser geometryFormat).
+
+RÈGLES :
+  • Fenêtres horaires, attente max, points non rattachables (skippedVisits) et dépôt non rattachable (400) :
+    EXACTEMENT les mêmes règles que /optimize. Une fenêtre intenable n'est pas un 400 : la meilleure répartition
+    est renvoyée avec feasible=false, timeWindowViolations>0 et stops[].timeWindowStatus = LATE / WAITING_TOO_LONG.
+  • Toutes les tournées partent du dépôt à departureTime (pas de décalage entre véhicules).
+  • routes contient EXACTEMENT vehicleCount entrées ("vehicle-0" … "vehicle-<K-1>"), chacune DÉJÀ ordonnée
+    (stops[] = ordre de passage). Une tournée n'est vide (stops=[]) que s'il y a moins de points valides que de
+    véhicules.
+  • Si TOUTES les visites sont écartées → 200, routes=[], usedVehicleCount=0, balance à zéro.
+  • Le solveur occupe un thread pendant toute la résolution : les appels simultanés au-delà du parallélisme
+    configuré sont mis en file d'attente (la réponse arrive plus tard, pas d'erreur).
+
+Réponse 200 (DispatchResponse) :
+  {
+    "score": string,                    // "<dur>hard/<soft>soft" ; 0hard = contraintes dures OK. Le soft (somme des carrés, s²)
+                                        // n'est comparable qu'entre deux résolutions du MÊME problème.
+    "feasible": boolean,                // true = fenêtres horaires, attente max et capacité (si fournie) toutes respectées
+    "timeWindowViolations": integer,    // nb d'arrêts avec timeWindowStatus ≠ OK
+    "maxWaitingSeconds": integer | null,// limite d'attente appliquée ; null = aucune
+    "solvingTimeSeconds": integer,      // budget de résolution RÉELLEMENT appliqué (requête plafonnée, ou défaut serveur)
+    "vehicleCount": integer,            // nombre de tournées demandé = routes.length
+    "usedVehicleCount": integer,        // tournées avec au moins 1 arrêt
+    "totalDrivingTimeSeconds": integer, // conduite cumulée, toutes tournées
+    "totalDistanceMeters": number,      // distance cumulée, toutes tournées
+    "totalDurationSeconds": integer,    // somme des routes[].durationSeconds (conduite + service + attente)
+    "balance": {                        // équilibre entre les tournées UTILISÉES, en secondes (sur routes[].durationSeconds)
+      "longestRouteSeconds": integer,   // tournée la plus longue
+      "shortestRouteSeconds": integer,  // tournée la plus courte (parmi celles qui ont ≥ 1 arrêt)
+      "averageRouteSeconds": integer,   // moyenne arrondie
+      "spreadSeconds": integer          // longest - shortest ; petit = charge équitable
+    },
+    "routes": [ RouteDto, ... ],        // MÊME RouteDto que /optimize (stops ordonnés, legFromPrevious, cumuls, heures,
+                                        // durationSeconds, geometry / geometryPolyline = trace complète de la tournée)
+    "skippedVisits": [ SkippedVisitDto, ... ]   // même structure que /optimize
+  }
+
+Exemple : 100 points, 5 tournées, 20 s de résolution, polylignes :
+  { "depot": {"lat": 48.1173, "lon": -1.6778}, "vehicleCount": 5, "departureTime": "2026-06-15T08:00:00",
+    "maxSolvingSeconds": 20, "geometryFormat": "POLYLINE",
+    "visits": [ {"id": "A", "name": "Client A", "lat": 48.12, "lon": -1.70, "serviceDurationSeconds": 300}, … ] }
+  → pour chaque i : routes[i].stops = ordre de passage de la tournée i, routes[i].durationSeconds = sa durée,
+    routes[i].geometryPolyline = son tracé ; balance.spreadSeconds = écart entre la plus longue et la plus courte.
+
+Codes : 200 (vérifier feasible + skippedVisits) ; 400 dépôt manquant/non rattachable, vehicleCount absent ou < 1,
+visits vide, timeWindowStart > timeWindowEnd, maxWaitingSeconds < 0 ou maxSolvingSeconds < 1 ; 503 routing indisponible.
 
 ====================================================================
 3) GEOCODING  — préfixe /geocoding
@@ -380,8 +464,11 @@ CONSIGNES D'IMPLÉMENTATION
 - Envoie/lis du JSON. Gère explicitement 400 et 503 (lire le ProblemDetail : champs `title`, `detail`, `status`).
 - Pour les longs trajets/tournées, demande geometryFormat="POLYLINE" et décode avec @mapbox/polyline
   (précision 5, ordre lat,lon). Pour alléger au maximum, "NONE".
-- Sur /optimization/optimize, inspecte TOUJOURS skippedVisits ET feasible avant d'afficher la tournée ;
-  renseigne departureTime dès qu'une visite a une fenêtre horaire.
+- Sur /optimization/optimize et /optimization/dispatch, inspecte TOUJOURS skippedVisits ET feasible avant
+  d'afficher les tournées ; renseigne departureTime dès qu'une visite a une fenêtre horaire.
+- Pour répartir beaucoup de points entre plusieurs chauffeurs, utilise /optimization/dispatch (pas /optimize
+  avec vehicleCount > 1). Prévois un timeout HTTP ≥ 90 s et affiche un état « calcul en cours » pendant
+  maxSolvingSeconds ; propose 10 s par défaut et 20-30 s pour un meilleur résultat.
 - Avant d'appeler une brique, tu peux vérifier sa disponibilité via son endpoint ./status (ready=true).
 - Ne suppose aucune symétrie de la matrice des temps (sens uniques possibles).
 </pre>

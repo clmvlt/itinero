@@ -95,6 +95,22 @@ est décrit avec des exemples. C'est la référence à jour de l'API.
   distance/durée/géométrie, par arrêt les cumuls et heures d'arrivée/départ, et la
   **géométrie complète de la tournée** (`routes[].geometry` / `geometryPolyline`).
   `vehicleCapacity` omis = illimité ; `demand`/`serviceDurationSeconds` omis = 0.
+- `POST /optimization/dispatch` — **répartition automatique** de N points (ex : 100) en K tournées
+  (`vehicleCount`, ex : 5) **équilibrées en durée**, chacune ordonnée et couvrant une zone
+  géographique cohérente. Aucune capacité nécessaire : l'objectif du solveur est la somme des
+  carrés des durées de tournée (réduit le temps global et l'écart entre chauffeurs).
+  ```json
+  {
+    "depot": {"lat": 48.1173, "lon": -1.6778},
+    "vehicleCount": 5,
+    "maxSolvingSeconds": 20,
+    "geometryFormat": "POLYLINE",
+    "visits": [ {"id": "A", "lat": 48.12, "lon": -1.70}, {"id": "B", "lat": 48.09, "lon": -1.65} ]
+  }
+  ```
+  `maxSolvingSeconds` (défaut 10 s, plafond 60 s) : la requête dure au moins ce temps, plus la
+  matrice. Réponse : `routes[]` (une par véhicule, avec `durationSeconds`), `balance`
+  (plus longue / plus courte / moyenne / écart), `usedVehicleCount`, `solvingTimeSeconds`.
 
 ### Géocodage
 - `GET /geocoding/status`
