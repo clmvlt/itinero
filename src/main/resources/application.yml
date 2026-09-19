@@ -29,6 +29,22 @@ app:
     # avec la version locale) et, si oui, la telecharger puis reconstruire graphe/index a chaud.
     # Deja a jour = rien n'est telecharge. Sans effet si auto-download=false.
     update-on-start: ${APP_UPDATE_ON_START:true}
+    # Robustesse des telechargements. L'extrait OSM France fait ~5 Go : une coupure reseau a
+    # 80 % du transfert faisait perdre les 4 Go deja recus et echouer la mise a jour jusqu'au
+    # prochain declenchement. Une tentative qui echoue est donc REPRISE la ou elle s'est
+    # arretee (HTTP Range + If-Range : si la version publiee change entre-temps, le transfert
+    # repart de zero au lieu de melanger deux versions).
+    download:
+      # Nombre total de tentatives pour un meme fichier (1 = comportement d'origine, sans reprise).
+      # Un echec definitif (404, espace disque insuffisant) arrete la boucle immediatement.
+      max-attempts: ${APP_DOWNLOAD_ATTEMPTS:5}
+      # Attente avant la 2e tentative, doublee ensuite (15 s, 30 s, 60 s, 120 s).
+      retry-delay-seconds: ${APP_DOWNLOAD_RETRY_DELAY:15}
+      # Duree sans le moindre octet recu au-dela de laquelle le transfert est considere bloque
+      # et interrompu (une nouvelle tentative reprend). Le timeout HTTP ne couvre PAS la lecture
+      # du corps de la reponse : sans ce garde-fou, un serveur muet bloquait la mise a jour
+      # indefiniment et empechait toutes les suivantes.
+      stall-timeout-seconds: ${APP_DOWNLOAD_STALL_TIMEOUT:180}
   routing:
     # Extrait OSM de la France (https://download.geofabrik.de/europe/france.html)
     osm-file: ${APP_OSM_FILE:data/france-latest.osm.pbf}
