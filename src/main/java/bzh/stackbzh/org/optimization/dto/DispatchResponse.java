@@ -15,14 +15,20 @@ public record DispatchResponse(
                 example = "0hard/-84567321soft")
         String score,
         @Schema(description = "true si TOUTES les contraintes dures sont respectees : aucun arret en retard sur sa "
-                + "fenetre, aucune attente au-dela de `maxWaitingSeconds`, aucune capacite depassee. false = les "
-                + "tournees sont quand meme renvoyees (meilleure solution trouvee) : inspecter "
-                + "`timeWindowViolations` et `stops[].timeWindowStatus`.", example = "true")
+                + "fenetre, aucune attente au-dela de `maxWaitingSeconds`, aucune capacite depassee et aucune "
+                + "mission appairee cassee. false = les tournees sont quand meme renvoyees (meilleure solution "
+                + "trouvee) : inspecter `timeWindowViolations`, `pairingViolations` et "
+                + "`stops[].timeWindowStatus`.", example = "true")
         boolean feasible,
         @Schema(description = "Nombre d'arrets dont la fenetre horaire n'est PAS respectee (`LATE` ou "
                 + "`WAITING_TOO_LONG`). 0 si toutes les fenetres sont tenues ou si aucune n'a ete fournie.",
                 example = "0")
         int timeWindowViolations,
+        @Schema(description = "Nombre de MISSIONS appairees (`shipments`) dont la regle n'est pas tenue : les deux "
+                + "arrets repartis dans des tournees differentes, ou l'enlevement place avant son chargement. "
+                + "0 = toutes les missions sont intactes (et toujours 0 sans `shipments` dans la requete).",
+                example = "0")
+        int pairingViolations,
         @Schema(description = "Attente maximale toleree devant une fenetre horaire effectivement appliquee, en "
                 + "secondes. null = pas de limite (desactive par `0`).", example = "3600", nullable = true)
         Integer maxWaitingSeconds,
@@ -48,9 +54,10 @@ public record DispatchResponse(
                 + "tournee est deja ordonnee (ordre optimal de passage) et couvre une zone geographique "
                 + "coherente. Une tournee peut etre vide (aucun arret) s'il y a plus de vehicules que de points.")
         List<OptimizeResponse.RouteDto> routes,
-        @Schema(description = "Visites EXCLUES car non rattachables au reseau routier (`UNROUTABLE`) ou trop "
-                + "eloignees de toute route (`TOO_FAR`). Elles ne figurent dans AUCUNE tournee. Le client DOIT "
-                + "verifier ce tableau.")
+        @Schema(description = "Visites EXCLUES car non rattachables au reseau routier (`UNROUTABLE`), trop "
+                + "eloignees de toute route (`TOO_FAR`), ou parce que l'autre extremite de leur mission l'etait "
+                + "(`PAIRED_POINT_SKIPPED` : une mission est ecartee en entier ou pas du tout). Elles ne figurent "
+                + "dans AUCUNE tournee. Le client DOIT verifier ce tableau.")
         List<OptimizeResponse.SkippedVisitDto> skippedVisits) {
 
     @Schema(description = "Equilibre des durees entre les tournees utilisees. Toutes les valeurs sont en secondes et "

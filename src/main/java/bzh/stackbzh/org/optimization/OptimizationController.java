@@ -25,6 +25,12 @@ import org.springframework.web.bind.annotation.RestController;
         - **`/dispatch`** : repartition AUTOMATIQUE de N points (une centaine ou plus) en K tournees \
         EQUILIBREES en duree, chaque tournee couvrant une zone geographique coherente et etant ordonnee. \
         Ne repose pas sur la capacite ; temps de resolution choisi par requete.
+
+        Les deux acceptent, EN OPTION et melangeables avec les points simples `visits`, des **missions \
+        appairees `shipments`** (chargement a un endroit -> enlevement a un autre) : l'API garantit alors \
+        que les deux arrets d'une mission sont servis par le MEME vehicule et que le chargement passe \
+        AVANT l'enlevement. Une requete sans `shipments` se comporte exactement comme avant.
+
         Les deux s'appuient sur le moteur de routing pour la matrice de temps reels : si le routing est \
         indisponible, elles renvoient 503.""")
 public class OptimizationController {
@@ -114,15 +120,46 @@ public class OptimizationController {
                     503 pour ce motif) : la tournee est calculee avec les points valides restants. Le client DOIT \
                     inspecter `skippedVisits` et signaler/corriger ces points. Si TOUTES les visites sont ecartees, \
                     la reponse est un 200 avec `routes` vide et tous les points dans `skippedVisits`. En revanche, \
-                    si c'est le **depot** qui n'est pas rattachable, l'optimisation est impossible -> **400**.""")
+                    si c'est le **depot** qui n'est pas rattachable, l'optimisation est impossible -> **400**.
+
+                    **Missions appairees (`shipments`) — OPTION.** A cote de `visits` (des points independants, \
+                    que le solveur ordonne librement), la requete peut porter des `shipments` : une marchandise \
+                    chargee a un endroit (`pickup`) puis enlevee/deposee a un autre (`delivery`). L'API ajoute \
+                    alors deux contraintes DURES : les deux arrets sont servis par le **MEME vehicule**, et le \
+                    **chargement passe AVANT l'enlevement**. Les deux listes se melangent librement ; une requete \
+                    sans `shipments` se comporte a l'identique de l'existant.
+                    - Chaque extremite est un `VisitDto` complet : elle a sa propre duree de service et sa propre \
+                    fenetre horaire (on peut donc exiger un chargement le matin et une depose l'apres-midi).
+                    - Une mission peut n'avoir qu'UNE extremite : `pickup` absent = marchandise chargee au depot \
+                    au depart (livraison classique) ; `delivery` absent = marchandise ramenee au depot en fin de \
+                    tournee (collecte). Le depot encadrant deja la tournee, aucun ordre n'est impose dans ce cas.
+                    - Dans la reponse, chaque arret porte `shipmentId` et `stopType` (`PICKUP`/`DELIVERY`) pour \
+                    recoller les deux bouts ; `pairingViolations` compte les missions cassees (0 attendu).
+                    - **Points non rattachables** : une mission est ecartee EN ENTIER ou pas du tout. Si une seule \
+                    extremite n'est pas rattachable, l'autre est ecartee avec `reason` = `PAIRED_POINT_SKIPPED` \
+                    (on ne peut pas enlever une marchandise jamais chargee).
+                    - **Temps de resolution** : des qu'il y a des missions, le probleme est plus difficile (l'etat \
+                    initial ignore la precedence, le solveur doit d'abord la reparer). Le budget passe donc de la \
+                    terminaison globale (1 s) a `maxSolvingSeconds`, sinon au defaut serveur \
+                    `app.optimization.shipments.default-solving-seconds` (5 s), plafonne a 60 s. La requete HTTP \
+                    dure alors au moins ce temps ; la valeur appliquee est renvoyee dans `solvingTimeSeconds`.
+                    - `demand` garde sa semantique : une SOMME comparee a `vehicleCapacity` sur la tournee \
+                    entiere, et non un suivi de la charge a bord. Le porter sur le `pickup` et laisser le \
+                    `delivery` a 0, sinon la charge est comptee deux fois.
+                    - Les identifiants doivent etre uniques dans la requete des qu'une mission est presente \
+                    (l'appairage se fait par identifiant) -> sinon **400**.""")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "Tournee(s) optimisee(s). Verifier `feasible` (false = "
-                    + "au moins une fenetre horaire (retard ou attente > `maxWaitingSeconds`) ou capacite non tenable, "
-                    + "details dans `stops[].timeWindowStatus`, `lateSeconds`, `excessiveWaitingSeconds`) "
-                    + "et `skippedVisits` (points ecartes car non rattachables au reseau routier ou trop eloignes)."),
+                    + "au moins une fenetre horaire (retard ou attente > `maxWaitingSeconds`), une capacite non "
+                    + "tenable ou une mission appairee cassee ; details dans `stops[].timeWindowStatus`, "
+                    + "`lateSeconds`, `excessiveWaitingSeconds` et `pairingViolations`) "
+                    + "et `skippedVisits` (points ecartes car non rattachables au reseau routier, trop eloignes, "
+                    + "ou parce que l'autre extremite de leur mission l'etait)."),
             @ApiResponse(responseCode = "400", description = "Depot manquant/non rattachable au reseau routier, "
-                    + "liste de visites vide, fenetre horaire invalide (`timeWindowStart` > `timeWindowEnd`) ou "
-                    + "`maxWaitingSeconds` negatif",
+                    + "requete sans aucun point (`visits` et `shipments` vides), mission sans `pickup` ni "
+                    + "`delivery`, identifiant de point duplique (requete avec missions), fenetre horaire "
+                    + "invalide (`timeWindowStart` > `timeWindowEnd`), `maxWaitingSeconds` negatif ou "
+                    + "`maxSolvingSeconds` < 1",
                     content = @Content),
             @ApiResponse(responseCode = "503", description = "Routing indisponible (matrice non calculable)", content = @Content)
     })
@@ -198,18 +235,32 @@ public class OptimizationController {
                     segments) ou `NONE`. Par tournee, `geometry`/`geometryPolyline` = trace COMPLETE depot -> arrets \
                     -> depot (polyline remplie sauf en NONE) ; par arret, `legFromPrevious` = segment individuel.
 
+                    **Missions appairees (`shipments`) — OPTION.** A cote de `visits`, la requete peut porter des \
+                    missions « chargement -> enlevement » (memes champs et memes regles que sur `/optimize`). Une \
+                    mission n'est JAMAIS coupee entre deux tournees : ses deux arrets partent dans la meme, le \
+                    chargement d'abord (contraintes DURES). L'equilibrage porte donc sur des missions entieres, ce \
+                    qui reduit un peu la finesse de la repartition : a nombre de points egal, l'ecart \
+                    `balance.spreadSeconds` est generalement plus grand qu'avec des points independants, et un \
+                    budget `maxSolvingSeconds` plus large est recommande (le solveur doit d'abord reparer la \
+                    precedence avant d'optimiser). Chaque arret de la reponse porte `shipmentId` et `stopType` \
+                    (`PICKUP`/`DELIVERY`) ; `pairingViolations` compte les missions cassees (0 attendu). Si une \
+                    extremite n'est pas rattachable au reseau, la mission entiere est ecartee (`reason` = \
+                    `PAIRED_POINT_SKIPPED`). Une requete sans `shipments` se comporte a l'identique de l'existant.
+
                     Exemple minimal : `{ "depot": {"lat": 48.1173, "lon": -1.6778}, "vehicleCount": 5, \
                     "maxSolvingSeconds": 20, "geometryFormat": "POLYLINE", "visits": [ {"id": "A", "lat": 48.12, \
                     "lon": -1.70}, ... 100 points ... ] }`.""")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "Repartition calculee : `routes` (une tournee ordonnee "
                     + "par vehicule, `vehicleCount` entrees), `balance` (equilibre des durees), `solvingTimeSeconds` "
-                    + "(budget applique). Verifier `feasible` (false = fenetre horaire, attente max ou capacite "
-                    + "intenable, details dans `stops[].timeWindowStatus`) et `skippedVisits` (points ecartes)."),
+                    + "(budget applique). Verifier `feasible` (false = fenetre horaire, attente max, capacite "
+                    + "intenable ou mission appairee cassee ; details dans `stops[].timeWindowStatus` et "
+                    + "`pairingViolations`) et `skippedVisits` (points ecartes)."),
             @ApiResponse(responseCode = "400", description = "Depot manquant ou non rattachable au reseau routier, "
-                    + "`vehicleCount` absent ou < 1, liste de visites vide, coordonnee manquante, fenetre horaire "
-                    + "invalide (`timeWindowStart` > `timeWindowEnd`), `maxWaitingSeconds` negatif ou "
-                    + "`maxSolvingSeconds` < 1", content = @Content),
+                    + "`vehicleCount` absent ou < 1, requete sans aucun point (`visits` et `shipments` vides), "
+                    + "mission sans `pickup` ni `delivery`, identifiant de point duplique (requete avec missions), "
+                    + "coordonnee manquante, fenetre horaire invalide (`timeWindowStart` > `timeWindowEnd`), "
+                    + "`maxWaitingSeconds` negatif ou `maxSolvingSeconds` < 1", content = @Content),
             @ApiResponse(responseCode = "503", description = "Routing indisponible (matrice non calculable : donnees "
                     + "absentes ou graphe en cours de (re)construction)", content = @Content)
     })

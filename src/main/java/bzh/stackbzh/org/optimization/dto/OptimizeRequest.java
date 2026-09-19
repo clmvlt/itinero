@@ -4,15 +4,17 @@ import bzh.stackbzh.org.routing.dto.Coordinate;
 import bzh.stackbzh.org.routing.dto.GeometryFormat;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.AssertTrue;
 import jakarta.validation.constraints.Min;
-import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
 
 import java.time.LocalDateTime;
 import java.util.List;
 
-@Schema(description = "Demande d'optimisation de tournee : depot commun, vehicules, heure de depart estimee, "
-        + "points a visiter (avec fenetres horaires optionnelles).")
+@Schema(description = "Demande d'optimisation de tournee : depot commun, vehicules, heure de depart estimee, et "
+        + "points a visiter, fournis sous deux formes combinables — `visits` (arrets independants, ordonnes "
+        + "librement) et `shipments` (missions appairees chargement -> enlevement, servies par le meme vehicule, "
+        + "chargement d'abord). Au moins un point ou une mission est requis.")
 public record OptimizeRequest(
         @Schema(description = "Depot : point de depart ET d'arrivee commun a tous les vehicules.",
                 requiredMode = Schema.RequiredMode.REQUIRED)
@@ -57,12 +59,48 @@ public record OptimizeRequest(
                 defaultValue = "POINTS", nullable = true)
         GeometryFormat geometryFormat,
 
-        @Schema(description = "Points a visiter (au moins 1). Chaque point peut porter une fenetre horaire optionnelle.",
-                requiredMode = Schema.RequiredMode.REQUIRED)
-        @NotEmpty @Valid List<VisitDto> visits) {
+        @Schema(description = "Temps de RESOLUTION alloue au solveur, en secondes. FACULTATIF et sans effet sur "
+                + "une tournee classique : omis, le serveur applique sa terminaison globale "
+                + "(`timefold.solver.termination.spent-limit`, 1 s), ce qui suffit pour ordonner des points "
+                + "independants. En revanche, DES QUE la requete contient des `shipments`, le probleme est plus "
+                + "difficile (l'etat initial ignore la precedence, le solveur doit d'abord la reparer) et un budget "
+                + "plus long est applique : valeur de ce champ, sinon defaut serveur "
+                + "`app.optimization.shipments.default-solving-seconds` (5 s), plafonne SILENCIEUSEMENT a "
+                + "`app.optimization.shipments.max-solving-seconds` (60 s). La requete HTTP dure alors au moins ce "
+                + "temps. La valeur reellement appliquee est renvoyee dans `solvingTimeSeconds`.",
+                example = "5", nullable = true, minimum = "1")
+        @Min(1) Integer maxSolvingSeconds,
+
+        @Schema(description = "Points a visiter, independants les uns des autres : le solveur est libre de les "
+                + "ordonner comme il veut. Chaque point peut porter une duree de service et une fenetre horaire "
+                + "optionnelles. Peut etre vide (ou absent) si `shipments` est fourni, mais la requete doit "
+                + "contenir AU MOINS un point ou une mission.",
+                nullable = true)
+        @Valid List<VisitDto> visits,
+
+        @Schema(description = "MISSIONS APPAIREES (chargement -> enlevement), facultatives. A utiliser quand une "
+                + "marchandise doit etre chargee a un endroit puis deposee a un autre : l'API garantit alors que "
+                + "les deux arrets sont sur le MEME vehicule et que le chargement passe AVANT l'enlevement. "
+                + "Peuvent etre melangees librement avec `visits`. Omises = comportement historique, a l'identique.",
+                nullable = true)
+        @Valid List<ShipmentDto> shipments) {
 
     public int resolvedVehicleCount() {
         return vehicleCount == null || vehicleCount < 1 ? 1 : vehicleCount;
+    }
+
+    public List<VisitDto> resolvedVisits() {
+        return visits != null ? visits : List.of();
+    }
+
+    public List<ShipmentDto> resolvedShipments() {
+        return shipments != null ? shipments : List.of();
+    }
+
+    @AssertTrue(message = "la requete doit contenir au moins une visite ou une mission (visits ou shipments)")
+    @Schema(hidden = true)
+    public boolean isNotEmpty() {
+        return !resolvedVisits().isEmpty() || !resolvedShipments().isEmpty();
     }
 
     public GeometryFormat resolvedGeometryFormat() {

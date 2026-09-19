@@ -57,6 +57,17 @@ app:
     dispatch:
       default-solving-seconds: ${APP_DISPATCH_SOLVING_SECONDS:10}
       max-solving-seconds: ${APP_DISPATCH_MAX_SOLVING_SECONDS:60}
+    # Missions appairees (`shipments` : chargement -> enlevement) sur POST /optimization/optimize.
+    # Elles ajoutent deux contraintes dures (meme vehicule, chargement d'abord) que l'heuristique de
+    # construction ignore : le solveur doit d'abord REPARER la precedence avant d'optimiser, ce que la
+    # terminaison globale de 1 s (timefold.solver.termination, cf. plus bas) ne permet pas. Des qu'une
+    # requete /optimize contient des missions, ce budget-ci s'applique a la place ; `default` vaut
+    # quand la requete ne fournit pas `maxSolvingSeconds`, `max` plafonne la valeur demandee.
+    # Sans `shipments`, RIEN ne change : la terminaison globale reste en vigueur.
+    # (/optimization/dispatch garde son propre budget, ci-dessus.)
+    shipments:
+      default-solving-seconds: ${APP_SHIPMENTS_SOLVING_SECONDS:5}
+      max-solving-seconds: ${APP_SHIPMENTS_MAX_SOLVING_SECONDS:60}
   geocoding:
     # Fichier BAN (https://adresse.data.gouv.fr/data/ban/adresses/latest/csv)
     # adresses-france.csv.gz (semicolon-separated, gzip)

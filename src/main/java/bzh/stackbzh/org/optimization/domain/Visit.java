@@ -3,6 +3,7 @@ package bzh.stackbzh.org.optimization.domain;
 import ai.timefold.solver.core.api.domain.entity.PlanningEntity;
 import ai.timefold.solver.core.api.domain.lookup.PlanningId;
 import ai.timefold.solver.core.api.domain.variable.CascadingUpdateShadowVariable;
+import ai.timefold.solver.core.api.domain.variable.IndexShadowVariable;
 import ai.timefold.solver.core.api.domain.variable.InverseRelationShadowVariable;
 import ai.timefold.solver.core.api.domain.variable.NextElementShadowVariable;
 import ai.timefold.solver.core.api.domain.variable.PreviousElementShadowVariable;
@@ -20,6 +21,13 @@ import ai.timefold.solver.core.api.domain.variable.PreviousElementShadowVariable
  * a {@code null} = pas de contrainte de ce cote. {@code maxWaitingSeconds} plafonne l'attente toleree
  * devant une fenetre non encore ouverte ({@code null} = illimitee) : au-dela, l'arret est considere comme
  * ne correspondant pas au creneau (contrainte dure {@code waitingExceedsMax}).
+ *
+ * <p><b>Missions appairees (shipments)</b> : une visite peut etre une extremite d'une mission
+ * "chargement -> enlevement" ({@code shipmentId} + {@link StopType} + {@code pairedVisit}). Les deux
+ * extremites doivent alors etre servies par le meme vehicule, le chargement avant l'enlevement
+ * (contraintes dures du {@code VehicleRoutingConstraintProvider}, qui comparent les
+ * {@code indexInRoute}). Une visite non appairee laisse ces trois champs a {@code null} et se comporte
+ * exactement comme avant.
  */
 @PlanningEntity
 public class Visit {
@@ -37,8 +45,33 @@ public class Visit {
     /** Attente maximale toleree avant l'ouverture de la fenetre (s) ; null = illimitee. */
     private Long maxWaitingSeconds;
 
+    /** Identifiant de la mission (shipment) dont cet arret est une extremite ; null = arret simple. */
+    private String shipmentId;
+    /** Role dans la mission : chargement ou enlevement ; null = arret simple. */
+    private StopType stopType;
+    /**
+     * L'autre extremite de la mission. DONNEE du probleme (pas une variable de planification) : elle est
+     * cablee une fois pour toutes avant la resolution. null = arret simple, ou mission a une seule
+     * extremite (l'autre bout est le depot, qui encadre deja la tournee : aucune precedence a imposer).
+     */
+    private Visit pairedVisit;
+
     @InverseRelationShadowVariable(sourceVariableName = "visits")
     private Vehicle vehicle;
+
+    /**
+     * Position de l'arret dans la tournee (0 = premier apres le depot) ; null tant que la visite n'est
+     * affectee a aucun vehicule. Maintenue par Timefold a chaque modification de la liste : TOUS les
+     * elements decales sont notifies, ce qui rend la comparaison de positions sure en calcul incremental.
+     *
+     * <p><b>Ne jamais</b> recalculer une position autrement (par exemple {@code visits.indexOf(...)} ou en
+     * la deduisant d'une heure d'arrivee) : {@link CascadingUpdateShadowVariable} arrete la cascade des que
+     * la valeur ne change plus, or une visite qui attend devant sa fenetre horaire garde la meme heure de
+     * depart malgre un decalage amont. Les visites suivantes ne seraient alors pas notifiees alors que leur
+     * position, elle, a change -> score corrompu.
+     */
+    @IndexShadowVariable(sourceVariableName = "visits")
+    private Integer indexInRoute;
 
     @PreviousElementShadowVariable(sourceVariableName = "visits")
     private Visit previousVisit;
@@ -108,6 +141,49 @@ public class Visit {
 
     public boolean hasTimeWindow() {
         return minStartSeconds != null || maxStartSeconds != null;
+    }
+
+    public String getShipmentId() {
+        return shipmentId;
+    }
+
+    public StopType getStopType() {
+        return stopType;
+    }
+
+    /** Rattache cet arret a une mission. Appele a la construction du probleme, jamais pendant la resolution. */
+    public void setShipment(String shipmentId, StopType stopType) {
+        this.shipmentId = shipmentId;
+        this.stopType = stopType;
+    }
+
+    public Visit getPairedVisit() {
+        return pairedVisit;
+    }
+
+    public void setPairedVisit(Visit pairedVisit) {
+        this.pairedVisit = pairedVisit;
+    }
+
+    public boolean isPickup() {
+        return stopType == StopType.PICKUP;
+    }
+
+    public boolean isDelivery() {
+        return stopType == StopType.DELIVERY;
+    }
+
+    /** true si l'arret a une extremite jumelle a servir dans la meme tournee. */
+    public boolean isPaired() {
+        return pairedVisit != null;
+    }
+
+    public Integer getIndexInRoute() {
+        return indexInRoute;
+    }
+
+    public void setIndexInRoute(Integer indexInRoute) {
+        this.indexInRoute = indexInRoute;
     }
 
     public Vehicle getVehicle() {

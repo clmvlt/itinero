@@ -4,8 +4,8 @@ import bzh.stackbzh.org.routing.dto.Coordinate;
 import bzh.stackbzh.org.routing.dto.GeometryFormat;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.AssertTrue;
 import jakarta.validation.constraints.Min;
-import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
 
 import java.time.LocalDateTime;
@@ -15,7 +15,9 @@ import java.util.List;
         + "(typiquement plusieurs dizaines a plusieurs centaines). L'API repartit elle-meme les points entre les "
         + "tournees en EQUILIBRANT LES DUREES (conduite + service + attentes) et en formant des zones geographiques "
         + "coherentes, puis ordonne chaque tournee. Aucune capacite n'est necessaire. Les fenetres horaires "
-        + "optionnelles par point sont respectees comme sur `/optimize`.")
+        + "optionnelles par point sont respectees comme sur `/optimize`. Les points sont fournis sous deux formes "
+        + "combinables : `visits` (arrets independants) et `shipments` (missions appairees chargement -> "
+        + "enlevement, jamais coupees entre deux tournees).")
 public record DispatchRequest(
         @Schema(description = "Depot : point de depart ET d'arrivee commun a toutes les tournees.",
                 requiredMode = Schema.RequiredMode.REQUIRED)
@@ -64,13 +66,35 @@ public record DispatchRequest(
                 defaultValue = "POINTS", nullable = true)
         GeometryFormat geometryFormat,
 
-        @Schema(description = "Points a repartir puis visiter (au moins 1 ; typiquement 20 a 300). Chaque point "
-                + "peut porter une duree de service et une fenetre horaire optionnelles. `demand` n'est utile "
-                + "que si `vehicleCapacity` est fourni.",
-                requiredMode = Schema.RequiredMode.REQUIRED)
-        @NotEmpty @Valid List<VisitDto> visits) {
+        @Schema(description = "Points a repartir puis visiter (typiquement 20 a 300), independants les uns des "
+                + "autres. Chaque point peut porter une duree de service et une fenetre horaire optionnelles. "
+                + "`demand` n'est utile que si `vehicleCapacity` est fourni. Peut etre vide (ou absent) si "
+                + "`shipments` est fourni, mais la requete doit contenir AU MOINS un point ou une mission.",
+                nullable = true)
+        @Valid List<VisitDto> visits,
+
+        @Schema(description = "MISSIONS APPAIREES (chargement -> enlevement), facultatives. Une mission n'est "
+                + "JAMAIS coupee entre deux tournees : ses deux arrets partent dans la meme, le chargement "
+                + "d'abord. La repartition equilibree se fait donc sur des missions entieres. Peuvent etre "
+                + "melangees librement avec `visits`. Omises = comportement historique, a l'identique.",
+                nullable = true)
+        @Valid List<ShipmentDto> shipments) {
 
     public GeometryFormat resolvedGeometryFormat() {
         return geometryFormat != null ? geometryFormat : GeometryFormat.POINTS;
+    }
+
+    public List<VisitDto> resolvedVisits() {
+        return visits != null ? visits : List.of();
+    }
+
+    public List<ShipmentDto> resolvedShipments() {
+        return shipments != null ? shipments : List.of();
+    }
+
+    @AssertTrue(message = "la requete doit contenir au moins une visite ou une mission (visits ou shipments)")
+    @Schema(hidden = true)
+    public boolean isNotEmpty() {
+        return !resolvedVisits().isEmpty() || !resolvedShipments().isEmpty();
     }
 }

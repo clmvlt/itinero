@@ -9,24 +9,38 @@ import java.util.List;
         + "heures d'arrivee/depart, respect des fenetres horaires et geometrie du trace.")
 public record OptimizeResponse(
         @Schema(description = "Score Timefold (`<dur>hard/<soft>soft`). `0hard` = contraintes dures respectees "
-                + "(capacite ET fenetres horaires). Le `soft` = temps de conduite + temps d'attente (s), minimise.",
+                + "(capacite, fenetres horaires ET missions appairees). Le `soft` = temps de conduite + temps "
+                + "d'attente (s), minimise.",
                 example = "0hard/-12450soft")
         String score,
         @Schema(description = "true si TOUTES les contraintes dures sont respectees : aucune capacite depassee, "
-                + "aucun arret en retard sur sa fenetre horaire (`lateSeconds` = 0 partout) et aucune attente "
-                + "au-dela de `maxWaitingSeconds` (`excessiveWaitingSeconds` = 0 partout). false = la tournee est "
-                + "quand meme renvoyee (meilleure solution trouvee) mais au moins une contrainte est violee : "
-                + "inspecter `timeWindowViolations` et les `stops[].timeWindowStatus`.", example = "true")
+                + "aucun arret en retard sur sa fenetre horaire (`lateSeconds` = 0 partout), aucune attente "
+                + "au-dela de `maxWaitingSeconds` (`excessiveWaitingSeconds` = 0 partout) et aucune mission "
+                + "appairee cassee (`pairingViolations` = 0). false = la tournee est quand meme renvoyee "
+                + "(meilleure solution trouvee) mais au moins une contrainte est violee : inspecter "
+                + "`timeWindowViolations`, `pairingViolations` et les `stops[].timeWindowStatus`.", example = "true")
         boolean feasible,
         @Schema(description = "Nombre d'arrets dont la fenetre horaire n'est PAS respectee : arrivee apres "
                 + "`timeWindowEnd` (`timeWindowStatus=LATE`) OU attente avant `timeWindowStart` superieure a "
                 + "`maxWaitingSeconds` (`timeWindowStatus=WAITING_TOO_LONG`). 0 si toutes les fenetres sont tenues "
                 + "ou si aucune fenetre n'a ete fournie.", example = "0")
         int timeWindowViolations,
+        @Schema(description = "Nombre de MISSIONS appairees (`shipments`) dont la regle n'est pas tenue dans les "
+                + "tournees renvoyees : les deux arrets sur des vehicules differents, ou l'enlevement place avant "
+                + "son chargement. Recompte sur la reponse elle-meme, independamment du score. 0 = toutes les "
+                + "missions sont correctement enchainees (et toujours 0 si la requete n'en contenait aucune).",
+                example = "0")
+        int pairingViolations,
         @Schema(description = "Attente maximale toleree devant une fenetre horaire effectivement appliquee, en "
                 + "secondes (valeur de la requete ou defaut serveur). null = pas de limite (desactive par `0`).",
                 example = "3600", nullable = true)
         Integer maxWaitingSeconds,
+        @Schema(description = "Temps de resolution reellement alloue au solveur, en secondes. null = terminaison "
+                + "globale du serveur (`timefold.solver.termination.spent-limit`, 1 s), cas d'une tournee sans "
+                + "mission appairee et sans `maxSolvingSeconds`. Renseigne des que la requete contient des "
+                + "`shipments` ou un `maxSolvingSeconds` (valeur demandee, plafonnee par la config serveur).",
+                example = "5", nullable = true)
+        Integer solvingTimeSeconds,
         @Schema(description = "Temps de conduite total cumule sur tous les vehicules, en secondes.", example = "12450")
         long totalDrivingTimeSeconds,
         @Schema(description = "Distance totale parcourue par tous les vehicules, en metres.", example = "184300.0")
@@ -35,9 +49,12 @@ public record OptimizeResponse(
         List<RouteDto> routes,
         @Schema(description = "Visites EXCLUES de l'optimisation car non rattachables au reseau routier "
                 + "(coordonnees en mer, hors de la zone OSM couverte, ou trop eloignees de toute route selon "
-                + "`app.routing.max-snap-distance-meters`). Ces points ne figurent dans AUCUNE tournee : ils sont "
-                + "ignores pour ne pas faire echouer toute la requete. Liste vide si tous les points ont ete pris "
-                + "en compte. Le client DOIT verifier ce tableau et, le cas echeant, signaler/corriger ces points.")
+                + "`app.routing.max-snap-distance-meters`), ou parce que l'autre extremite de leur mission l'etait "
+                + "(`PAIRED_POINT_SKIPPED` : une mission appairee est ecartee en entier ou pas du tout, sinon la "
+                + "tournee serait structurellement infaisable). Ces points ne figurent dans AUCUNE tournee : ils "
+                + "sont ignores pour ne pas faire echouer toute la requete. Liste vide si tous les points ont ete "
+                + "pris en compte. Le client DOIT verifier ce tableau et, le cas echeant, signaler/corriger ces "
+                + "points.")
         List<SkippedVisitDto> skippedVisits) {
 
     @Schema(description = "Visite ecartee de l'optimisation, avec le motif. N'apparait dans aucune tournee.")
@@ -51,13 +68,23 @@ public record OptimizeResponse(
             @Schema(description = "Longitude fournie.", example = "-1.5536")
             double lon,
             @Schema(description = "Motif d'exclusion : `UNROUTABLE` (aucune route trouvable a proximite : point en "
-                    + "mer, hors zone couverte, ou reseau deconnecte) ou `TOO_FAR` (route la plus proche au-dela "
-                    + "du seuil `app.routing.max-snap-distance-meters`).",
-                    example = "TOO_FAR", allowableValues = {"UNROUTABLE", "TOO_FAR"})
+                    + "mer, hors zone couverte, ou reseau deconnecte), `TOO_FAR` (route la plus proche au-dela "
+                    + "du seuil `app.routing.max-snap-distance-meters`) ou `PAIRED_POINT_SKIPPED` (ce point est "
+                    + "rattachable, mais l'AUTRE extremite de sa mission ne l'est pas : une mission ne peut pas "
+                    + "etre executee a moitie, les deux arrets sont donc ecartes ensemble).",
+                    example = "TOO_FAR", allowableValues = {"UNROUTABLE", "TOO_FAR", "PAIRED_POINT_SKIPPED"})
             String reason,
             @Schema(description = "Distance (m) jusqu'a la route la plus proche. Renseignee pour `TOO_FAR` ; "
-                    + "null pour `UNROUTABLE` (aucune route trouvee).", example = "1830.0", nullable = true)
-            Double snapDistanceMeters) {
+                    + "null pour `UNROUTABLE` (aucune route trouvee) et `PAIRED_POINT_SKIPPED`.",
+                    example = "1830.0", nullable = true)
+            Double snapDistanceMeters,
+            @Schema(description = "Identifiant de la mission dont ce point est une extremite. null pour un arret "
+                    + "simple (issu de `visits`).", example = "M1", nullable = true)
+            String shipmentId,
+            @Schema(description = "Role du point dans sa mission : `PICKUP` (chargement) ou `DELIVERY` "
+                    + "(enlevement). null pour un arret simple.",
+                    example = "PICKUP", nullable = true, allowableValues = {"PICKUP", "DELIVERY"})
+            String stopType) {
     }
 
     @Schema(description = "Tournee d'un vehicule : visites dans l'ordre, depot -> points -> depot.")
@@ -156,7 +183,17 @@ public record OptimizeResponse(
                     example = "OK", allowableValues = {"OK", "LATE", "WAITING_TOO_LONG"})
             String timeWindowStatus,
             @Schema(description = "Demande consommee a ce point.", example = "1")
-            int demand) {
+            int demand,
+            @Schema(description = "Identifiant de la mission (`shipments[].id`) dont cet arret est une extremite. "
+                    + "null pour un arret simple issu de `visits`. Les deux arrets d'une meme mission portent le "
+                    + "meme `shipmentId` : c'est ce qui permet de les recoller cote client.",
+                    example = "M1", nullable = true)
+            String shipmentId,
+            @Schema(description = "Role de l'arret dans sa mission : `PICKUP` (chargement de la marchandise) ou "
+                    + "`DELIVERY` (enlevement / depose). null pour un arret simple. Dans une tournee valide, le "
+                    + "`PICKUP` d'une mission apparait TOUJOURS avant son `DELIVERY`, dans la meme tournee.",
+                    example = "PICKUP", nullable = true, allowableValues = {"PICKUP", "DELIVERY"})
+            String stopType) {
     }
 
     @Schema(description = "Un segment routier : distance, duree et geometrie (selon geometryFormat).")
