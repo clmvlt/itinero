@@ -63,6 +63,8 @@ spring-org est une API REST 100 % locale (aucune dépendance externe à l'exécu
   1. Routing      — itinéraires + matrices de temps (moteur GraphHopper, extrait OpenStreetMap France).
   2. Optimisation — tournées VRP/TSP (moteur Timefold) : /optimize = ordre de passage optimal de N points ;
      /dispatch = répartition automatique de N points (ex : 100) en K tournées (ex : 5) équilibrées en durée.
+     Les deux acceptent en OPTION des MISSIONS APPAIRÉES (shipments : chargement quelque part → enlèvement
+     ailleurs), garanties sur le MÊME véhicule et dans cet ordre.
   3. Geocoding    — recherche / autocomplétion d'adresse (index Lucene sur la Base Adresse Nationale BAN).
 
 URL de base (production) : https://ors.stack.bzh
@@ -165,8 +167,14 @@ Corps (OptimizeRequest) :
                                            // Au-delà → l'arrêt « ne correspond pas au créneau » (contrainte dure, cf. ci-dessous).
     "geometryFormat": "POINTS"|"POLYLINE"|"NONE",      // défaut POINTS
     "includeGeometry": boolean | null,     // DÉPRÉCIÉ — préférer geometryFormat. true->POINTS, false->NONE. Ignoré si geometryFormat fourni.
-    "visits": [ VisitDto, ... ] (REQUIS, non vide)
+    "maxSolvingSeconds": integer | null,   // temps de résolution (s), ≥ 1. SANS EFFET sur une tournée classique
+                                           // (terminaison globale 1 s). Utile seulement avec des shipments :
+                                           // null → défaut serveur 5 s, plafonné à 60 s. Renvoyé dans solvingTimeSeconds.
+    "visits": [ VisitDto, ... ] | null,    // arrêts INDÉPENDANTS, ordonnés librement par le solveur
+    "shipments": [ ShipmentDto, ... ] | null  // MISSIONS APPAIRÉES (cf. plus bas). Mélangeable avec visits.
   }
+  Au moins un élément au total entre visits et shipments, sinon 400. Omettre shipments = comportement
+  historique à l'identique.
 
 VisitDto :
   {
@@ -182,6 +190,32 @@ VisitDto :
                                               // Les deux null = « pas d'importance » (aucune contrainte horaire).
                                               // timeWindowStart > timeWindowEnd → 400.
   }
+
+ShipmentDto (MISSION APPAIRÉE : chargement → enlèvement) :
+  {
+    "id": string | null,        // optionnel ; auto-généré "s<index>". Repris dans stops[].shipmentId.
+    "name": string | null,      // libellé de la mission, ex "Palette Dupont"
+    "pickup":   VisitDto | null,  // arrêt de CHARGEMENT  ; null = chargé au dépôt au départ
+    "delivery": VisitDto | null   // arrêt d'ENLÈVEMENT   ; null = ramené au dépôt en fin de tournée
+  }
+  • Au moins une des deux extrémités, sinon 400.
+  • Chaque extrémité est un VisitDto COMPLET : elle a sa PROPRE durée de service et sa PROPRE fenêtre
+    horaire (on peut donc exiger un chargement le matin et une dépose l'après-midi).
+  • Avec les DEUX extrémités, l'API ajoute deux contraintes DURES : même véhicule, et chargement AVANT
+    enlèvement. Avec une seule, aucun ordre n'est imposé (le dépôt encadre déjà la tournée) : l'arrêt se
+    comporte comme un point de visits.
+  • demand garde sa sémantique : une SOMME comparée à vehicleCapacity sur toute la tournée, PAS un suivi
+    de la charge à bord. Le porter sur le pickup et laisser le delivery à 0, sinon la charge compte double.
+  • Les identifiants doivent être UNIQUES dans la requête dès qu'il y a des shipments (l'appairage se fait
+    par identifiant) → sinon 400.
+  • Si une extrémité n'est pas rattachable au réseau, la mission est écartée EN ENTIER : l'autre extrémité
+    apparaît dans skippedVisits avec reason="PAIRED_POINT_SKIPPED".
+  Exemple : charger 2 palettes chez le fournisseur, les déposer chez le client avant midi :
+    { "depot": {"lat": 48.1173, "lon": -1.6778},
+      "shipments": [ { "id": "M1", "name": "Palette Dupont",
+                       "pickup":   {"lat": 48.12, "lon": -1.70, "demand": 2, "serviceDurationSeconds": 600},
+                       "delivery": {"lat": 47.22, "lon": -1.55, "timeWindowEnd": "2026-06-15T12:00:00"} } ] }
+    → routes[0].stops = [ M1-pickup (stopType "PICKUP"), M1-delivery (stopType "DELIVERY") ], dans cet ordre.
 
 FENÊTRES HORAIRES (VRPTW) :
   • Exemple : départ 20h, pharmacie entre 21h et 23h, deux autres clients sans contrainte :
@@ -265,6 +299,9 @@ StopDto (un arrêt) :
     "waitingSeconds": integer,          // attente avant ouverture de la fenêtre (0 sinon)
     "excessiveWaitingSeconds": integer, // part de l'attente au-delà de maxWaitingSeconds ; 0 = OK ; >0 = VIOLATION (feasible=false)
     "lateSeconds": integer,             // retard sur timeWindowEnd ; 0 = OK ; >0 = VIOLATION (feasible=false)
+    "shipmentId": string | null,        // mission dont cet arrêt est une extrémité ; null = arrêt simple (visits)
+    "stopType": "PICKUP"|"DELIVERY"|null, // rôle dans la mission ; null = arrêt simple.
+                                        // Dans une tournée valide, le PICKUP précède TOUJOURS son DELIVERY.
     "timeWindowStatus": "OK"|"LATE"|"WAITING_TOO_LONG",  // OK = fenêtre tenue ou pas de fenêtre ; sinon violation
     "demand": integer
   }
@@ -284,12 +321,22 @@ SkippedVisitDto (visite écartée) :
     "visitId": string,                  // id fourni ou auto-généré "v<index>"
     "name": string | null,
     "lat": number, "lon": number,       // coordonnées fournies
-    "reason": "UNROUTABLE" | "TOO_FAR", // UNROUTABLE = aucune route trouvable ; TOO_FAR = route la plus proche au-delà du seuil
-    "snapDistanceMeters": number | null // distance jusqu'à la route la plus proche ; renseigné pour TOO_FAR, null pour UNROUTABLE
+    "reason": "UNROUTABLE" | "TOO_FAR" | "PAIRED_POINT_SKIPPED",
+                                        // UNROUTABLE = aucune route trouvable ; TOO_FAR = route la plus proche au-delà du seuil ;
+                                        // PAIRED_POINT_SKIPPED = ce point est bon, mais l'AUTRE extrémité de sa mission ne l'est pas
+    "snapDistanceMeters": number | null,// distance jusqu'à la route la plus proche ; renseigné pour TOO_FAR, null sinon
+    "shipmentId": string | null,        // mission concernée ; null = arrêt simple
+    "stopType": "PICKUP"|"DELIVERY"|null
   }
 
-Codes : 200 (vérifier feasible + skippedVisits) ; 400 dépôt manquant/non rattachable, visits vide,
-timeWindowStart > timeWindowEnd ou maxWaitingSeconds négatif ; 503 routing indisponible.
+La réponse porte aussi :
+  "pairingViolations": integer,   // missions cassées (extrémités séparées ou enlèvement avant chargement). 0 attendu.
+  "solvingTimeSeconds": integer | null  // budget réellement alloué ; null = terminaison globale (1 s)
+
+Codes : 200 (vérifier feasible + pairingViolations + skippedVisits) ; 400 dépôt manquant/non rattachable,
+requête sans aucun point (visits ET shipments vides), mission sans pickup ni delivery, identifiant dupliqué
+(requête avec shipments), timeWindowStart > timeWindowEnd, maxWaitingSeconds négatif ou maxSolvingSeconds < 1 ;
+503 routing indisponible.
 
 --- POST /optimization/dispatch ---
 But : RÉPARTIR automatiquement une liste de points (typiquement 20 à 300, ex : 100) en K tournées
@@ -321,10 +368,20 @@ Corps (DispatchRequest) :
                                            // matrice → prévoir un timeout client ≥ 90 s. 100 points / 5 tournées : 10 s correct,
                                            // 20-30 s très bon.
     "geometryFormat": "POINTS"|"POLYLINE"|"NONE",  // défaut POINTS ; POLYLINE recommandé (≈ 100 segments à tracer)
-    "visits": [ VisitDto, ... ] (REQUIS, non vide)   // MÊME VisitDto que /optimize (id, name, lat, lon, demand,
-                                                     // serviceDurationSeconds, timeWindowStart, timeWindowEnd)
+    "visits": [ VisitDto, ... ] | null,   // MÊME VisitDto que /optimize (id, name, lat, lon, demand,
+                                          // serviceDurationSeconds, timeWindowStart, timeWindowEnd)
+    "shipments": [ ShipmentDto, ... ] | null  // MÊME ShipmentDto que /optimize (cf. plus haut). Mélangeable avec visits.
   }
+  Au moins un élément au total entre visits et shipments, sinon 400.
   Pas de champ includeGeometry sur cette route (utiliser geometryFormat).
+
+MISSIONS APPAIRÉES SUR /dispatch :
+  Une mission n'est JAMAIS coupée entre deux tournées : ses deux arrêts partent dans la même, chargement
+  d'abord (contraintes DURES). L'équilibrage porte donc sur des missions ENTIÈRES, ce qui réduit un peu la
+  finesse de la répartition : à nombre de points égal, balance.spreadSeconds est généralement plus grand
+  qu'avec des points indépendants, et un maxSolvingSeconds plus large est recommandé (le solveur doit
+  d'abord réparer la précédence avant d'optimiser). La réponse porte pairingViolations (0 attendu) et
+  chaque arrêt porte shipmentId + stopType.
 
 RÈGLES :
   • Fenêtres horaires, attente max, points non rattachables (skippedVisits) et dépôt non rattachable (400) :
@@ -359,7 +416,8 @@ Réponse 200 (DispatchResponse) :
     },
     "routes": [ RouteDto, ... ],        // MÊME RouteDto que /optimize (stops ordonnés, legFromPrevious, cumuls, heures,
                                         // durationSeconds, geometry / geometryPolyline = trace complète de la tournée)
-    "skippedVisits": [ SkippedVisitDto, ... ]   // même structure que /optimize
+    "skippedVisits": [ SkippedVisitDto, ... ],  // même structure que /optimize
+    "pairingViolations": integer        // missions cassées (0 attendu ; toujours 0 sans shipments)
   }
 
 Exemple : 100 points, 5 tournées, 20 s de résolution, polylignes :
@@ -369,8 +427,10 @@ Exemple : 100 points, 5 tournées, 20 s de résolution, polylignes :
   → pour chaque i : routes[i].stops = ordre de passage de la tournée i, routes[i].durationSeconds = sa durée,
     routes[i].geometryPolyline = son tracé ; balance.spreadSeconds = écart entre la plus longue et la plus courte.
 
-Codes : 200 (vérifier feasible + skippedVisits) ; 400 dépôt manquant/non rattachable, vehicleCount absent ou < 1,
-visits vide, timeWindowStart > timeWindowEnd, maxWaitingSeconds < 0 ou maxSolvingSeconds < 1 ; 503 routing indisponible.
+Codes : 200 (vérifier feasible + pairingViolations + skippedVisits) ; 400 dépôt manquant/non rattachable,
+vehicleCount absent ou < 1, requête sans aucun point (visits ET shipments vides), mission sans pickup ni delivery,
+identifiant dupliqué (requête avec shipments), timeWindowStart > timeWindowEnd, maxWaitingSeconds < 0 ou
+maxSolvingSeconds < 1 ; 503 routing indisponible.
 
 ====================================================================
 3) GEOCODING  — préfixe /geocoding
@@ -466,6 +526,11 @@ CONSIGNES D'IMPLÉMENTATION
   (précision 5, ordre lat,lon). Pour alléger au maximum, "NONE".
 - Sur /optimization/optimize et /optimization/dispatch, inspecte TOUJOURS skippedVisits ET feasible avant
   d'afficher les tournées ; renseigne departureTime dès qu'une visite a une fenêtre horaire.
+- Dès qu'une marchandise doit être PRISE quelque part puis DÉPOSÉE ailleurs, utilise shipments (et non deux
+  entrées de visits) : c'est le seul moyen de garantir le même véhicule et l'ordre chargement → enlèvement.
+  Vérifie pairingViolations == 0, et relie les deux arrêts d'une mission via stops[].shipmentId /
+  stops[].stopType. Prévois un timeout plus large : la présence de shipments relève le temps de résolution
+  de /optimize (5 s par défaut au lieu d'1 s).
 - Pour répartir beaucoup de points entre plusieurs chauffeurs, utilise /optimization/dispatch (pas /optimize
   avec vehicleCount > 1). Prévois un timeout HTTP ≥ 90 s et affiche un état « calcul en cours » pendant
   maxSolvingSeconds ; propose 10 s par défaut et 20-30 s pour un meilleur résultat.

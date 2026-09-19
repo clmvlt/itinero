@@ -111,6 +111,34 @@ est décrit avec des exemples. C'est la référence à jour de l'API.
   `maxSolvingSeconds` (défaut 10 s, plafond 60 s) : la requête dure au moins ce temps, plus la
   matrice. Réponse : `routes[]` (une par véhicule, avec `durationSeconds`), `balance`
   (plus longue / plus courte / moyenne / écart), `usedVehicleCount`, `solvingTimeSeconds`.
+- **Missions appairées (`shipments`) — option des DEUX routes ci-dessus.** Quand une marchandise
+  doit être **chargée à un endroit puis déposée à un autre**, il ne suffit pas de lister deux
+  points : l'API doit garantir que les deux arrêts sont sur le **même véhicule** et que le
+  **chargement passe avant l'enlèvement**. C'est ce que fait `shipments[]`, qui se mélange
+  librement avec `visits[]` :
+  ```json
+  {
+    "depot": {"lat": 48.1173, "lon": -1.6778},
+    "shipments": [
+      {
+        "id": "M1", "name": "Palette Dupont",
+        "pickup":   {"lat": 48.12, "lon": -1.70, "serviceDurationSeconds": 600},
+        "delivery": {"lat": 47.22, "lon": -1.55, "timeWindowEnd": "2026-06-15T12:00:00"}
+      }
+    ],
+    "visits": [ {"id": "A", "lat": 48.09, "lon": -1.65} ]
+  }
+  ```
+  Chaque extrémité est un point complet (durée de service et fenêtre horaire **propres**). Une
+  mission peut n'avoir qu'une extrémité : `pickup` absent = chargé au dépôt au départ (livraison
+  classique), `delivery` absent = ramené au dépôt (collecte) ; aucun ordre n'est alors imposé.
+  Dans la réponse, chaque arrêt porte `shipmentId` et `stopType` (`PICKUP`/`DELIVERY`), et
+  `pairingViolations` compte les missions cassées (0 attendu). Si une extrémité n'est pas
+  rattachable au réseau routier, la mission est écartée **en entier**
+  (`skippedVisits[].reason = PAIRED_POINT_SKIPPED`). Sur `/optimize`, la présence de missions
+  relève le temps de résolution (défaut 5 s au lieu de la terminaison globale d'1 s) : le solveur
+  doit d'abord réparer la précédence avant d'optimiser. **Une requête sans `shipments` se comporte
+  exactement comme avant.**
 
 ### Géocodage
 - `GET /geocoding/status`
@@ -130,6 +158,10 @@ d'environnement :
 | `APP_UPDATE_CRON` | `0 0 8 * * SUN` | planning de mise à jour |
 | `APP_OSM_URL` | Geofabrik France | source du réseau routier |
 | `APP_BAN_URL` | BAN France | source des adresses |
+| `APP_DISPATCH_SOLVING_SECONDS` | `10` | temps de résolution par défaut de `/dispatch` |
+| `APP_DISPATCH_MAX_SOLVING_SECONDS` | `60` | plafond du temps de résolution de `/dispatch` |
+| `APP_SHIPMENTS_SOLVING_SECONDS` | `5` | temps de résolution de `/optimize` **quand la requête contient des missions appairées** |
+| `APP_SHIPMENTS_MAX_SOLVING_SECONDS` | `60` | plafond correspondant |
 | `timefold.solver.termination.spent-limit` | `5s` | temps alloué au solveur |
 
 Lancer sans données (tests / CI) : `APP_AUTO_DOWNLOAD=false`.
