@@ -156,6 +156,9 @@ d'environnement :
 | `SERVER_PORT` | `8080` | port HTTP |
 | `APP_AUTO_DOWNLOAD` | `true` | télécharger / mettre à jour les données automatiquement |
 | `APP_UPDATE_CRON` | `0 0 8 * * SUN` | planning de mise à jour |
+| `APP_DOWNLOAD_ATTEMPTS` | `5` | tentatives par fichier ; une coupure réseau est **reprise** là où elle s'est arrêtée (HTTP `Range`) au lieu de tout recommencer |
+| `APP_DOWNLOAD_RETRY_DELAY` | `15` | attente (s) avant la 2ᵉ tentative, doublée ensuite |
+| `APP_DOWNLOAD_STALL_TIMEOUT` | `180` | délai (s) sans le moindre octet reçu au-delà duquel le transfert est considéré bloqué |
 | `APP_OSM_URL` | Geofabrik France | source du réseau routier |
 | `APP_BAN_URL` | BAN France | source des adresses |
 | `APP_DISPATCH_SOLVING_SECONDS` | `10` | temps de résolution par défaut de `/dispatch` |
