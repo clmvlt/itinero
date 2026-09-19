@@ -144,10 +144,11 @@ public class DataUpdateService {
         } catch (Exception e) {
             log.error("Mise a jour des donnees ({}) : erreur inattendue.", trigger.label(), e);
             long now = System.currentTimeMillis();
+            String cause = DataDownloadService.describe(e);
             status.setDataUpdate(new StatusRegistry.DataUpdateInfo(trigger.label(), "FAILED", now, now,
-                    "Erreur inattendue : " + e));
+                    "Erreur inattendue : " + cause));
             notifier.notifyError("Mise a jour des donnees en echec - " + trigger.label(),
-                    "**Machine** : " + machineLine() + "\nErreur inattendue : " + e);
+                    "**Machine** : " + machineLine() + "\nErreur inattendue : " + cause);
         } finally {
             running.set(false);
         }
@@ -192,9 +193,9 @@ public class DataUpdateService {
         try {
             remote = downloadService.head(ds.url());
         } catch (Exception e) {
-            log.warn("{} : verification de la version publiee impossible : {}", ds.label(), e.getMessage());
+            log.warn("{} : verification de la version publiee impossible.", ds.label(), e);
             return new Plan(ds, current, null, failed(ds, current, null, null,
-                    "Verification de la version publiee impossible : " + e.getMessage()));
+                    "Verification de la version publiee impossible : " + DataDownloadService.describe(e)));
         }
         if (DataDownloadService.isUpToDate(ds.file(), remote)) {
             log.info("{} : deja a jour (version publiee le {}).", ds.label(),
@@ -218,19 +219,23 @@ public class DataUpdateService {
         } catch (Exception e) {
             log.error("{} : telechargement echoue.", ds.label(), e);
             restoreState(ds, "telechargement de la nouvelle version echoue");
-            return failed(ds, plan.before(), null, null, "Telechargement echoue : " + e.getMessage());
+            return failed(ds, plan.before(), null, null,
+                    "Telechargement echoue : " + DataDownloadService.describe(e));
         }
         log.info("{} : reconstruction a partir de la nouvelle version...", ds.label());
         Instant rebuildStart = Instant.now();
+        String rebuildError = null;
         try {
             ds.rebuild().run();
         } catch (Exception e) {
             log.error("{} : reconstruction echouee.", ds.label(), e);
+            rebuildError = DataDownloadService.describe(e);
         }
         Duration rebuildDuration = Duration.between(rebuildStart, Instant.now());
         if (!ds.ready().getAsBoolean()) {
             return failed(ds, plan.before(), download.duration(), rebuildDuration,
-                    "Reconstruction echouee apres telechargement (voir les logs) : moteur indisponible.");
+                    "Reconstruction echouee apres telechargement : moteur indisponible"
+                            + (rebuildError != null ? " (" + rebuildError + ")" : " (voir les logs du serveur)"));
         }
         Snapshot after = snapshot(ds);
         String remoteName = plan.remote().resolvedFileName();
